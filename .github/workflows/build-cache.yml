@@ -48,6 +48,11 @@ jobs:
           java-version: '21'
           cache: maven
 
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.9
+
       - name: Cache ~/.m2/repository
         uses: actions/cache@v4
         with:
@@ -60,14 +65,13 @@ jobs:
       - name: Install Flow plugin to mavenLocal
         working-directory: flow
         run: |
-          chmod +x mvnw
-          ./mvnw -B -ntp -DskipTests -am -pl flow-plugins/flow-gradle-plugin install
+          mvn -B -ntp -DskipTests -am -pl flow-plugins/flow-gradle-plugin install
 
       - name: Resolve Flow version
         id: flow-version
         working-directory: flow
         run: |
-          version=$(./mvnw -q -B -ntp help:evaluate -Dexpression=project.version -DforceStdout)
+          version=$(mvn -q -B -ntp help:evaluate -Dexpression=project.version -DforceStdout)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Resolved FLOW_VERSION=${version}"
 
