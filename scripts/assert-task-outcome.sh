@@ -15,6 +15,26 @@
 
 set -euo pipefail
 
+# Colour output when stdout is a real terminal. NO_COLOR=1 disables;
+# FORCE_COLOR=1 enables even when piped. Mirrors the convention in
+# scripts/run-project.sh so the two scripts agree on when to emit
+# ANSI codes.
+if [[ -n "${FORCE_COLOR:-}" ]] || { [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; }; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+else
+  C_RESET=''; C_BOLD=''
+  C_RED=''; C_GREEN=''
+fi
+
+ok() {
+  printf '%sOK  %s %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$1"
+}
+
+fail() {
+  printf '%sFAIL%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$1" >&2
+}
+
 if [[ $# -ne 3 ]]; then
   echo "usage: $0 <log-file> <task-path> <expected-outcome>" >&2
   exit 2
@@ -34,7 +54,7 @@ fi
 task_line=$(grep -E "^> Task ${task_path}( |$)" "$log_file" | tail -n 1 || true)
 
 if [[ -z "$task_line" ]]; then
-  echo "assert-task-outcome: task ${task_path} did not appear in $log_file" >&2
+  fail "task ${task_path} did not appear in $log_file"
   echo "--- last 40 lines of log ---" >&2
   tail -n 40 "$log_file" >&2
   exit 1
@@ -47,31 +67,31 @@ outcome=${outcome# }  # drop leading space if present
 case "$expected" in
   SUCCESS)
     if [[ -z "$outcome" ]]; then
-      echo "OK  ${task_path} = SUCCESS"
+      ok "${task_path} = SUCCESS"
       exit 0
     fi
     ;;
   FROM-CACHE)
     if [[ "$outcome" == "FROM-CACHE" ]]; then
-      echo "OK  ${task_path} = FROM-CACHE"
+      ok "${task_path} = FROM-CACHE"
       exit 0
     fi
     ;;
   UP-TO-DATE)
     if [[ "$outcome" == "UP-TO-DATE" ]]; then
-      echo "OK  ${task_path} = UP-TO-DATE"
+      ok "${task_path} = UP-TO-DATE"
       exit 0
     fi
     ;;
   NOT_FROM_CACHE)
     if [[ -z "$outcome" ]]; then
-      echo "OK  ${task_path} = SUCCESS (NOT_FROM_CACHE)"
+      ok "${task_path} = SUCCESS (NOT_FROM_CACHE)"
       exit 0
     fi
     ;;
   ANY_CACHE_HIT)
     if [[ "$outcome" == "FROM-CACHE" || "$outcome" == "UP-TO-DATE" ]]; then
-      echo "OK  ${task_path} = ${outcome}"
+      ok "${task_path} = ${outcome}"
       exit 0
     fi
     ;;
@@ -82,6 +102,6 @@ case "$expected" in
 esac
 
 actual=${outcome:-SUCCESS}
-echo "FAIL ${task_path}: expected ${expected}, got ${actual}" >&2
+fail "${task_path}: expected ${expected}, got ${actual}"
 echo "task line: ${task_line}" >&2
 exit 1

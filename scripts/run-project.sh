@@ -29,10 +29,56 @@
 
 set -euo pipefail
 
+# Colour output when stdout is a real terminal. NO_COLOR=1 disables;
+# FORCE_COLOR=1 enables even when piped (e.g. `... | less -R` or in
+# CI).
+if [[ -n "${FORCE_COLOR:-}" ]] || { [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; }; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'
+else
+  C_RESET=''; C_BOLD=''; C_DIM=''
+  C_RED=''; C_GREEN=''; C_YELLOW=''; C_CYAN=''
+fi
+
+section() {
+  local rule="────────────────────────────────────────────────────────"
+  printf '\n%s%s%s\n'   "${C_BOLD}${C_CYAN}" "$rule" "$C_RESET"
+  printf '%s  %s%s\n'   "${C_BOLD}${C_CYAN}" "$1" "$C_RESET"
+  printf '%s%s%s\n\n'   "${C_BOLD}${C_CYAN}" "$rule" "$C_RESET"
+}
+
+success_banner() {
+  local rule="════════════════════════════════════════════════════════"
+  printf '\n%s%s%s\n'   "${C_BOLD}${C_GREEN}" "$rule" "$C_RESET"
+  printf '%s  %s%s\n'   "${C_BOLD}${C_GREEN}" "$1" "$C_RESET"
+  printf '%s%s%s\n\n'   "${C_BOLD}${C_GREEN}" "$rule" "$C_RESET"
+}
+
 # Print the failing line and command before the shell exits via `set -e`.
 # Makes silent exits (e.g. a substitution returning non-zero under
 # pipefail) immediately diagnosable.
-trap 'rc=$?; echo "run-project: exit ${rc} at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
+trap 'rc=$?; printf "%srun-project: exit %s at line %s: %s%s\n" "$C_RED" "$rc" "$LINENO" "$BASH_COMMAND" "$C_RESET" >&2' ERR
+
+# Stack of cleanup actions. Each scenario registers its undo (restore
+# a backed-up file, delete a created file) BEFORE the destructive
+# step, so an aborted run still leaves a clean working tree.
+# Executed in LIFO order on script exit (success, failure, Ctrl-C).
+pending_cleanups=()
+
+register_cleanup() {
+  pending_cleanups+=("$1")
+}
+
+flush_cleanups() {
+  local i action
+  for ((i=${#pending_cleanups[@]}-1; i>=0; i--)); do
+    action="${pending_cleanups[$i]}"
+    eval "$action" 2>/dev/null || true
+  done
+  pending_cleanups=()
+}
+
+trap flush_cleanups EXIT
 
 CLEAR_CACHE=false
 
@@ -165,7 +211,7 @@ assert_archive_has_bundle() {
   local prefix=$2
   local marker="${prefix}META-INF/VAADIN/webapp/"
   if [[ ! -f "$archive" ]]; then
-    echo "FAIL archive not found: ${archive}" >&2
+    printf '%sFAIL%s archive not found: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
     return 1
   fi
   # `|| true` so that a no-match grep (exit 1) under pipefail does not
@@ -174,27 +220,27 @@ assert_archive_has_bundle() {
   local hits
   hits=$(unzip -l "$archive" | grep -cF "${marker}" || true)
   if [[ "${hits:-0}" -eq 0 ]]; then
-    echo "FAIL archive ${archive} missing ${marker}" >&2
+    printf '%sFAIL%s archive %s missing %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" "$marker" >&2
     unzip -l "$archive" | grep -F "META-INF/VAADIN" >&2 || true
     return 1
   fi
-  echo "OK  archive ${archive} contains ${marker} (${hits} entries)"
+  printf '%sOK  %s archive %s contains %s (%s entries)\n' "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$marker" "$hits"
 }
 
 assert_archive_lacks_bundle() {
   local archive=$1
   if [[ ! -f "$archive" ]]; then
-    echo "FAIL archive not found: ${archive}" >&2
+    printf '%sFAIL%s archive not found: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
     return 1
   fi
   local hits
   hits=$(unzip -l "$archive" | grep -cF "META-INF/VAADIN/webapp/" || true)
   if [[ "${hits:-0}" -ne 0 ]]; then
-    echo "FAIL negative project ${project} unexpectedly bundled the frontend:" >&2
+    printf '%sFAIL%s negative project %s unexpectedly bundled the frontend:\n' "$C_RED$C_BOLD" "$C_RESET" "$project" >&2
     unzip -l "$archive" | grep -F "META-INF/VAADIN/webapp/" >&2
     return 1
   fi
-  echo "OK  archive ${archive} does not contain META-INF/VAADIN/webapp/ (expected for ${project})"
+  printf '%sOK  %s archive %s does not contain META-INF/VAADIN/webapp/ (expected for %s)\n' "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$project"
 }
 
 assert_outcome() {
@@ -205,9 +251,10 @@ assert_outcome() {
 # Negative projects: build once, assert bundle absence.
 #---------------------------------------------------------------------
 if [[ "$IS_NEGATIVE" == "true" ]]; then
-  echo "=== ${project}: negative single-build run ==="
+  section "${project}: negative single-build run"
   run_gradle build.log clean "$BUILD_TASK"
   assert_archive_lacks_bundle "$ARCHIVE_GLOB"
+  success_banner "${project}: negative assertion passed"
   exit 0
 fi
 
@@ -215,7 +262,7 @@ fi
 # Positive projects: scenarios A, B, C, D.
 #---------------------------------------------------------------------
 
-echo "=== ${project}: Scenario A (cold-cache restore) ==="
+section "${project}: Scenario A (cold-cache restore)"
 run_gradle scenario-a-1.log clean "$BUILD_TASK"
 assert_outcome scenario-a-1.log ":vaadinBuildFrontend" SUCCESS
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
@@ -225,10 +272,13 @@ run_gradle scenario-a-2.log "$BUILD_TASK"
 assert_outcome scenario-a-2.log ":vaadinBuildFrontend" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 
-echo "=== ${project}: Scenario B (add test class) ==="
+section "${project}: Scenario B (add test class)"
 rm -rf build/
 added_test=src/test/java/com/example/AddedTest.java
 mkdir -p "$(dirname "$added_test")"
+# Register undo before creating the file so an aborted run still
+# leaves the working tree clean (EXIT trap → flush_cleanups).
+register_cleanup "rm -f '$added_test'"
 cat > "$added_test" <<'EOF'
 package com.example;
 
@@ -243,9 +293,8 @@ EOF
 run_gradle scenario-b.log "$BUILD_TASK"
 assert_outcome scenario-b.log ":vaadinBuildFrontend" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
-rm "$added_test"
 
-echo "=== ${project}: Scenario C (edit resource) ==="
+section "${project}: Scenario C (edit resource)"
 # Use messages.properties — a resource file that is NOT declared as an
 # input of vaadinBuildFrontend. (application.properties is declared as an
 # @InputFile with content sensitivity, so editing it would correctly
@@ -253,21 +302,25 @@ echo "=== ${project}: Scenario C (edit resource) ==="
 rm -rf build/
 resource=src/main/resources/messages.properties
 cp "$resource" "$resource.bak"
+# Register restore before the destructive edit so an aborted run
+# still leaves the working tree clean (EXIT trap → flush_cleanups).
+register_cleanup "[[ -f '$resource.bak' ]] && mv '$resource.bak' '$resource'"
 echo "# scenario C marker $(date -u +%s)" >> "$resource"
 run_gradle scenario-c.log "$BUILD_TASK"
 assert_outcome scenario-c.log ":vaadinBuildFrontend" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
-mv "$resource.bak" "$resource"
 
-echo "=== ${project}: Scenario D (modify @Route Java) ==="
+section "${project}: Scenario D (modify @Route Java)"
 rm -rf build/
 view=src/main/java/com/example/HelloView.java
 cp "$view" "$view.bak"
+# Register restore before the destructive edit so an aborted run
+# still leaves the working tree clean (EXIT trap → flush_cleanups).
+register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 # Edit the heading literal so bytecode changes.
 sed -i 's/Hello, Vaadin!/Hello, Vaadin (edited)!/' "$view"
 run_gradle scenario-d.log "$BUILD_TASK"
 assert_outcome scenario-d.log ":vaadinBuildFrontend" NOT_FROM_CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
-mv "$view.bak" "$view"
 
-echo "=== ${project}: all scenarios passed ==="
+success_banner "${project}: all scenarios passed"
