@@ -71,7 +71,7 @@ jobs:
         id: flow-version
         working-directory: flow
         run: |
-          version=$(mvn -q -B -ntp help:evaluate -Dexpression=project.version -DforceStdout)
+          version=$(mvn -N -q -B -ntp help:evaluate -Dexpression=project.version -DforceStdout)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Resolved FLOW_VERSION=${version}"
 
