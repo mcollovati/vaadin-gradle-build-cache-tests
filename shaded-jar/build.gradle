@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.gradleup.shadow' version '8.3.5'
+    id 'com.vaadin.flow'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2-SNAPSHOT')
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    implementation "com.vaadin:flow:${flowVersion}"
+    implementation 'org.slf4j:slf4j-simple:2.0.3'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+application {
+    mainClass = 'com.example.Application'
+}
+
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}

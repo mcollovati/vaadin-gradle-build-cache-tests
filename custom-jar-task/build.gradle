@@ -1,0 +1,36 @@
+plugins {
+    id 'java'
+    id 'com.vaadin.flow'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2-SNAPSHOT')
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    implementation "com.vaadin:flow:${flowVersion}"
+    implementation 'org.slf4j:slf4j-simple:2.0.3'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}
+
+// A user-defined Jar task. The Flow plugin's isVaadinApplicationArchiveTask()
+// only recognises `jar` by name (plus War / BootJar by type), so this custom
+// task is NOT wired up to vaadinBuildFrontend and the Vaadin bundle is NOT
+// included in its output.
+tasks.register('customJar', Jar) {
+    archiveBaseName = 'custom-jar'
+    from sourceSets.main.output
+}

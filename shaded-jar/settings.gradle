@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        mavenLocal()
+        gradlePluginPortal()
+        maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+    }
+    def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2-SNAPSHOT')
+    resolutionStrategy {
+        eachPlugin {
+            if (requested.id.id == 'com.vaadin.flow') {
+                useModule("com.vaadin:flow-gradle-plugin:${flowVersion}")
+            }
+        }
+    }
+}
+
+rootProject.name = 'shaded-jar'

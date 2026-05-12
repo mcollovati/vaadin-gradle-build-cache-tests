@@ -1,0 +1,53 @@
+# --- Gradle ---------------------------------------------------------
+.gradle/
+build/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.jar
+.gradletasknamecache
+hs_err_pid*
+
+# --- Vaadin / frontend ---------------------------------------------
+node/
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.npmrc
+src/main/bundles/
+src/main/dev-bundle/
+src/main/frontend/generated/
+frontend/generated/
+src/main/resources/META-INF/VAADIN/
+src/main/webapp/VAADIN/
+types.d.ts
+tsconfig.tsbuildinfo
+vite.config.ts.timestamp-*
+vite.generated.ts
+.vaadin/
+
+# --- Build-cache scenario logs (written by scripts/run-project.sh) -
+*/scenario-*.log
+*/build.log
+
+# --- IDEs ----------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.vscode/
+*.code-workspace
+.project
+.classpath
+.settings/
+bin/
+.factorypath
+nbproject/private/
+
+# --- OS / editor ---------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

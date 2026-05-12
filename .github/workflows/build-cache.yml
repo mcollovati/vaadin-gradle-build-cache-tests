@@ -1,0 +1,114 @@
+name: Gradle build-cache validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow_repo:
+        description: "Owner/name of the Flow repository to test against"
+        required: true
+        default: "vaadin/flow"
+      flow_ref:
+        description: "Git ref on the Flow repo (branch, tag, or SHA)"
+        required: true
+        default: "main"
+  schedule:
+    # Nightly run against vaadin/flow main.
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-cache-${{ github.event.inputs.flow_repo || 'vaadin/flow' }}-${{ github.event.inputs.flow_ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - plain-jar
+          - war
+          - spring-boot-jar
+          - shaded-jar
+          - custom-jar-task
+
+    steps:
+      - name: Checkout test-projects
+        uses: actions/checkout@v4
+
+      - name: Checkout Flow
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.flow_repo || 'vaadin/flow' }}
+          ref: ${{ github.event.inputs.flow_ref || 'main' }}
+          path: flow
+
+      - name: Resolve Flow SHA
+        id: flow-sha
+        working-directory: flow
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Cache ~/.m2/repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-flow-${{ steps.flow-sha.outputs.sha }}-${{ hashFiles('flow/**/pom.xml') }}
+          restore-keys: |
+            m2-flow-${{ steps.flow-sha.outputs.sha }}-
+            m2-flow-
+
+      # setup-gradle@v4 already caches ~/.gradle/caches/modules-* and
+      # ~/.gradle/wrapper. We additionally persist the local build-cache
+      # so scenarios that prime the cache in one workflow run can hit it
+      # in a subsequent run (useful for debugging cache invalidation).
+      - name: Cache Gradle local build-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: gradle-build-cache-${{ matrix.project }}-${{ steps.flow-sha.outputs.sha }}
+          restore-keys: |
+            gradle-build-cache-${{ matrix.project }}-
+
+      - name: Install Flow plugin to mavenLocal
+        working-directory: flow
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -ntp -DskipTests -am -pl flow-plugins/flow-gradle-plugin install
+          FLOW_VERSION=$(./mvnw -q -B -ntp help:evaluate -Dexpression=project.version -DforceStdout)
+          echo "FLOW_VERSION=${FLOW_VERSION}" >> "$GITHUB_ENV"
+          echo "Resolved FLOW_VERSION=${FLOW_VERSION}"
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Run scenarios
+        run: bash scripts/run-project.sh "${{ matrix.project }}" "${FLOW_VERSION}"
+
+      - name: Upload gradle logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.project }}-logs
+          path: ${{ matrix.project }}/*.log
+          if-no-files-found: ignore

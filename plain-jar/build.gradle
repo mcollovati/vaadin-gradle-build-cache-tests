@@ -1,0 +1,39 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.vaadin.flow'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2-SNAPSHOT')
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    implementation "com.vaadin:flow:${flowVersion}"
+    implementation 'org.slf4j:slf4j-simple:2.0.3'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+application {
+    mainClass = 'com.example.Application'
+}
+
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
