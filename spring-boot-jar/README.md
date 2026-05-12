@@ -77,15 +77,19 @@ rm src/test/java/com/example/AddedTest.java
 
 ### Scenario C — Edit a resource file
 
+Resources under `src/main/resources/` that are not declared as inputs of
+`vaadinBuildFrontend` (only `application.properties` and
+`vaadin-featureflags.properties` are) must not invalidate the cache.
+
 ```bash
 rm -rf build/
-echo "# scenario C marker $(date -u +%s)" >> src/main/resources/application.properties
+echo "# scenario C marker $(date -u +%s)" >> src/main/resources/messages.properties
 
 ./gradlew bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 
-git checkout src/main/resources/application.properties
+git checkout src/main/resources/messages.properties
 ```
 
 ### Scenario D — Modify the @Route view

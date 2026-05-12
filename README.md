@@ -34,7 +34,7 @@ four scenarios in order:
 |---|-----------------------|----------------------------------------|
 | A | Cold-cache restore: build → `rm -rf build/` → build | `SUCCESS` then `FROM-CACHE` |
 | B | Add a test class then build with a clean output tree | `FROM-CACHE` |
-| C | Edit `src/main/resources/application.properties` then build | `FROM-CACHE` |
+| C | Edit `src/main/resources/messages.properties` then build | `FROM-CACHE` |
 | D | Modify the `@Route` view's Java code then build      | not from cache (re-executes) |
 
 Scenario D is the negative assertion that proves the cache key is

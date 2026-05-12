@@ -21,7 +21,7 @@
 # Positive projects (plain-jar, war, spring-boot-jar) exercise scenarios:
 #   A) Cold-cache restore: build -> rm -rf build/ -> build -> FROM-CACHE
 #   B) Add test class:     rm -rf build/ -> add test -> build -> FROM-CACHE
-#   C) Edit resource:      rm -rf build/ -> edit application.properties -> build -> FROM-CACHE
+#   C) Edit resource:      rm -rf build/ -> edit messages.properties -> build -> FROM-CACHE
 #   D) Modify @Route Java: rm -rf build/ -> edit HelloView -> build -> NOT_FROM_CACHE
 #
 # Negative projects (shaded-jar, custom-jar-task) run only a single build and
@@ -246,8 +246,12 @@ assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 rm "$added_test"
 
 echo "=== ${project}: Scenario C (edit resource) ==="
+# Use messages.properties — a resource file that is NOT declared as an
+# input of vaadinBuildFrontend. (application.properties is declared as an
+# @InputFile with content sensitivity, so editing it would correctly
+# invalidate the cache and is not a useful negative case here.)
 rm -rf build/
-resource=src/main/resources/application.properties
+resource=src/main/resources/messages.properties
 cp "$resource" "$resource.bak"
 echo "# scenario C marker $(date -u +%s)" >> "$resource"
 run_gradle scenario-c.log "$BUILD_TASK"
