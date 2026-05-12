@@ -120,12 +120,10 @@ affects every Gradle project on the machine sharing the same
 ## CI workflow
 
 `.github/workflows/build-cache.yml` runs the same scenarios in CI. It
-is triggered:
+is triggered manually via `workflow_dispatch`, with inputs:
 
-- Manually via `workflow_dispatch`, with inputs:
-  - `flow_repo` (default `vaadin/flow`) — Flow repo (supports forks).
-  - `flow_ref` (default `main`) — branch, tag, or SHA.
-- Nightly at 02:00 UTC against `vaadin/flow@main`.
+- `flow_repo` (default `vaadin/flow`) — Flow repo (supports forks).
+- `flow_ref` (default `main`) — branch, tag, or SHA.
 
 A matrix runs all five projects in parallel; each job installs the
 specified Flow ref's plugin to its own `~/.m2/repository`, then runs
