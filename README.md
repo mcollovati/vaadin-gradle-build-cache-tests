@@ -47,8 +47,9 @@ key.
 ### Prerequisites
 
 - Java 21+ (Temurin recommended)
-- Gradle 8.14+ on `PATH` (the projects do not ship a wrapper; CI sets
-  Gradle up via `gradle/actions/setup-gradle`)
+- Gradle: not needed on `PATH` — each project ships a wrapper
+  (`./gradlew`). `scripts/run-project.sh` auto-detects the wrapper;
+  export `GRADLE_BIN=/path/to/gradle` to override.
 - Node.js 22+
 - A Flow checkout you want to test, with the plugin installed locally
   to `~/.m2/repository`. From your Flow checkout:
@@ -68,7 +69,7 @@ key.
 
 ```bash
 cd plain-jar
-gradle clean build --build-cache --console=plain \
+./gradlew clean build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 unzip -l build/libs/plain-jar.jar | grep META-INF/VAADIN/webapp/
 ```
@@ -96,16 +97,25 @@ The local Gradle build cache lives at
 `$GRADLE_USER_HOME/caches/build-cache-1/` — default
 `~/.gradle/caches/build-cache-1/`. Wipe it when you want to guarantee a
 cold-cache run (for example, before re-validating that the suite still
-catches the regression the PR fixes):
+catches the regression the PR fixes).
+
+The runner script accepts `--clear-cache` (or `-c`) which wipes the
+cache before starting:
+
+```bash
+bash scripts/run-project.sh --clear-cache plain-jar "$FLOW_VERSION"
+```
+
+Equivalently, do it by hand:
 
 ```bash
 rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
 ```
 
-To bypass the cache for a single invocation without deleting it, add
-`--no-build-cache` to the Gradle command line. Note that this affects
-every Gradle project on the machine sharing the same `GRADLE_USER_HOME`,
-so be deliberate.
+To bypass the cache for a single Gradle invocation without deleting it,
+add `--no-build-cache` to the command line. Note that the rm form
+affects every Gradle project on the machine sharing the same
+`GRADLE_USER_HOME`, so be deliberate.
 
 ## CI workflow
 

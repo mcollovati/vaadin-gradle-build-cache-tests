@@ -12,7 +12,7 @@ The plain `jar` task is disabled (Spring Boot's recommendation) so only
 ## Prerequisites
 
 - Java 21+ (Temurin recommended)
-- Gradle 8.14+ on `PATH`
+- Gradle: not needed on `PATH` — this project ships a wrapper (`./gradlew`)
 - Node.js 22+
 - Flow plugin and `com.vaadin:flow` artifact installed locally:
 
@@ -24,7 +24,7 @@ The plain `jar` task is disabled (Spring Boot's recommendation) so only
 ## Quick start
 
 ```bash
-gradle clean bootJar --build-cache --console=plain \
+./gradlew clean bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 
@@ -43,12 +43,12 @@ Expected outcome:
 ### Scenario A — Cold-cache restore
 
 ```bash
-gradle clean bootJar --build-cache --console=plain \
+./gradlew clean bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend
 
 rm -rf build/
-gradle bootJar --build-cache --console=plain \
+./gradlew bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 ```
@@ -68,7 +68,7 @@ public class AddedTest {
 }
 EOF
 
-gradle bootJar --build-cache --console=plain \
+./gradlew bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 
@@ -81,7 +81,7 @@ rm src/test/java/com/example/AddedTest.java
 rm -rf build/
 echo "# scenario C marker $(date -u +%s)" >> src/main/resources/application.properties
 
-gradle bootJar --build-cache --console=plain \
+./gradlew bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 
@@ -94,7 +94,7 @@ git checkout src/main/resources/application.properties
 rm -rf build/
 sed -i 's/Hello, Vaadin!/Hello, Vaadin (edited)!/' src/main/java/com/example/HelloView.java
 
-gradle bootJar --build-cache --console=plain \
+./gradlew bootJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend       (NO FROM-CACHE suffix)
 
@@ -112,7 +112,7 @@ rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
 Or bypass the cache for a single invocation without deleting it:
 
 ```bash
-gradle bootJar --no-build-cache --console=plain \
+./gradlew bootJar --no-build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 

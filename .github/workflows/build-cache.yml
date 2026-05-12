@@ -64,10 +64,11 @@ jobs:
         with:
           node-version: '24'
 
+      # Each project ships a Gradle wrapper, so we let the wrapper drive
+      # the Gradle version. setup-gradle@v4 still wraps it for dependency
+      # caching and build-scan integration.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.14'
 
       - name: Cache ~/.m2/repository
         uses: actions/cache@v4

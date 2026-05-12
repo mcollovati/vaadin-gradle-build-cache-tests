@@ -8,7 +8,7 @@ that the produced WAR contains the Vaadin bundle at
 ## Prerequisites
 
 - Java 21+ (Temurin recommended)
-- Gradle 8.14+ on `PATH`
+- Gradle: not needed on `PATH` — this project ships a wrapper (`./gradlew`)
 - Node.js 22+
 - Flow plugin and `com.vaadin:flow` artifact installed locally:
 
@@ -20,7 +20,7 @@ that the produced WAR contains the Vaadin bundle at
 ## Quick start
 
 ```bash
-gradle clean build --build-cache --console=plain \
+./gradlew clean build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 
@@ -39,12 +39,12 @@ Expected outcome:
 ### Scenario A — Cold-cache restore
 
 ```bash
-gradle clean build --build-cache --console=plain \
+./gradlew clean build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend
 
 rm -rf build/
-gradle build --build-cache --console=plain \
+./gradlew build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 ```
@@ -64,7 +64,7 @@ public class AddedTest {
 }
 EOF
 
-gradle build --build-cache --console=plain \
+./gradlew build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 
@@ -77,7 +77,7 @@ rm src/test/java/com/example/AddedTest.java
 rm -rf build/
 echo "# scenario C marker $(date -u +%s)" >> src/main/resources/application.properties
 
-gradle build --build-cache --console=plain \
+./gradlew build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend FROM-CACHE
 
@@ -90,7 +90,7 @@ git checkout src/main/resources/application.properties
 rm -rf build/
 sed -i 's/Hello, Vaadin!/Hello, Vaadin (edited)!/' src/main/java/com/example/HelloView.java
 
-gradle build --build-cache --console=plain \
+./gradlew build --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 # Expect: > Task :vaadinBuildFrontend       (NO FROM-CACHE suffix)
 
@@ -108,7 +108,7 @@ rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
 Or bypass the cache for a single invocation without deleting it:
 
 ```bash
-gradle build --no-build-cache --console=plain \
+./gradlew build --no-build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 

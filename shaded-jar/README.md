@@ -1,6 +1,6 @@
 # shaded-jar (negative test)
 
-Standalone Gradle project applying `com.gradleup.shadow` alongside the
+Standalone Gradle project applying `com../gradlewup.shadow` alongside the
 Flow plugin. This is a **documented limitation** of the current Flow
 Gradle plugin: `isVaadinApplicationArchiveTask()` only recognises the
 canonical `jar` task, the `War` type, and Spring Boot's `BootJar`.
@@ -17,7 +17,7 @@ assertion here will start failing and call attention to that change.
 ## Prerequisites
 
 - Java 21+ (Temurin recommended)
-- Gradle 8.14+ on `PATH`
+- Gradle: not needed on `PATH` — this project ships a wrapper (`./gradlew`)
 - Node.js 22+
 - Flow plugin and `com.vaadin:flow` artifact installed locally:
 
@@ -29,7 +29,7 @@ assertion here will start failing and call attention to that change.
 ## Quick start
 
 ```bash
-gradle clean shadowJar --build-cache --console=plain \
+./gradlew clean shadowJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 
@@ -69,7 +69,7 @@ rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
 Or bypass the cache for a single invocation without deleting it:
 
 ```bash
-gradle shadowJar --no-build-cache --console=plain \
+./gradlew shadowJar --no-build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 

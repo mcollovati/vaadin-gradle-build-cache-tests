@@ -16,7 +16,7 @@ start failing and surface the change.
 ## Prerequisites
 
 - Java 21+ (Temurin recommended)
-- Gradle 8.14+ on `PATH`
+- Gradle: not needed on `PATH` — this project ships a wrapper (`./gradlew`)
 - Node.js 22+
 - Flow plugin and `com.vaadin:flow` artifact installed locally:
 
@@ -28,7 +28,7 @@ start failing and surface the change.
 ## Quick start
 
 ```bash
-gradle clean customJar --build-cache --console=plain \
+./gradlew clean customJar --build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 
@@ -70,7 +70,7 @@ rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
 Or bypass the cache for a single invocation without deleting it:
 
 ```bash
-gradle customJar --no-build-cache --console=plain \
+./gradlew customJar --no-build-cache --console=plain \
   -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
 ```
 

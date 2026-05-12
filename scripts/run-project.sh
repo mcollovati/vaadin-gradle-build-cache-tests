@@ -2,7 +2,21 @@
 # Run build-cache scenarios for one of the test projects.
 #
 # Usage:
-#   run-project.sh <project-dir-name> <flow-version>
+#   run-project.sh [--clear-cache|-c] <project-dir-name> <flow-version>
+#
+# Options:
+#   --clear-cache, -c    Wipe the local Gradle build cache
+#                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
+#                        to ~/.gradle/caches/build-cache-1) before running.
+#                        Use this to guarantee a cold start when validating
+#                        FROM-CACHE assertions.
+#   --help, -h           Show this help and exit.
+#
+# Env:
+#   GRADLE_BIN           Override the Gradle binary (default: ./gradlew in
+#                        the project, else system 'gradle').
+#   GRADLE_USER_HOME     Standard Gradle override. The cleared cache path
+#                        is "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1".
 #
 # Positive projects (plain-jar, war, spring-boot-jar) exercise scenarios:
 #   A) Cold-cache restore: build -> rm -rf build/ -> build -> FROM-CACHE
@@ -15,8 +29,34 @@
 
 set -euo pipefail
 
+CLEAR_CACHE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clear-cache|-c)
+      CLEAR_CACHE=true
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "run-project: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <project-dir-name> <flow-version>" >&2
+  echo "usage: $0 [--clear-cache|-c] <project-dir-name> <flow-version>" >&2
   exit 2
 fi
 
@@ -30,6 +70,16 @@ project_dir="${repo_root}/${project}"
 if [[ ! -d "$project_dir" ]]; then
   echo "run-project: unknown project '${project}'" >&2
   exit 2
+fi
+
+if [[ "$CLEAR_CACHE" == "true" ]]; then
+  cache_dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
+  if [[ -d "$cache_dir" ]]; then
+    echo "Clearing local Gradle build cache at ${cache_dir}"
+    rm -rf "$cache_dir"
+  else
+    echo "Local Gradle build cache not present at ${cache_dir}; nothing to clear"
+  fi
 fi
 
 cd "$project_dir"
@@ -78,7 +128,17 @@ GRADLE_ARGS=(
   "-PflowVersion=${flow_version}"
 )
 
-GRADLE_BIN=${GRADLE_BIN:-gradle}
+# Prefer the project's Gradle wrapper if present so the suite works
+# without a system Gradle install. Fall back to system `gradle`.
+# Callers can force a specific binary by exporting GRADLE_BIN.
+if [[ -z "${GRADLE_BIN:-}" ]]; then
+  if [[ -x ./gradlew ]]; then
+    GRADLE_BIN=./gradlew
+  else
+    GRADLE_BIN=gradle
+  fi
+fi
+echo "Using gradle binary: ${GRADLE_BIN}"
 
 run_gradle() {
   local log=$1; shift
