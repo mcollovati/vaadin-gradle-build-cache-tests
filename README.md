@@ -12,21 +12,26 @@ behaviour going forward.
 
 ## What's in here
 
-| Project           | Plugins                                                    | Task         | Archive layout                          | Archive expectation           |
-|-------------------|------------------------------------------------------------|--------------|------------------------------------------|-------------------------------|
-| `plain-jar`       | `java`, `application`, `com.vaadin.flow`                   | `build`      | `*.jar` (bundle at root)                 | Bundle **in** archive         |
-| `war`             | `war`, `com.vaadin.flow`                                   | `build`      | `*.war` (bundle at `WEB-INF/classes/`)   | Bundle **in** archive         |
-| `spring-boot-jar` | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Bundle **in** archive         |
-| `shaded-jar`      | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** archive         |
-| `custom-jar-task` | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** archive         |
+| Project                  | Plugins                                                    | Task         | Archive layout                          | Archive expectation           |
+|--------------------------|------------------------------------------------------------|--------------|------------------------------------------|-------------------------------|
+| `plain-jar`              | `java`, `application`, `com.vaadin.flow`                   | `build`      | `*.jar` (bundle at root)                 | Bundle **in** archive         |
+| `war`                    | `war`, `com.vaadin.flow`                                   | `build`      | `*.war` (bundle at `WEB-INF/classes/`)   | Bundle **in** archive         |
+| `spring-boot-jar`        | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Bundle **in** archive         |
+| `shaded-jar`             | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** archive         |
+| `custom-jar-task`        | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** archive         |
+| `custom-frontend-output` | `java`, `application`, `com.vaadin.flow` + custom `vaadin.frontendOutputDirectory` | `build`      | `*.jar` (bundle at root)                 | Bundle **in** archive         |
 
-All five projects exercise the same cache scenarios and the same
+All six projects exercise the same cache scenarios and the same
 archive-content expectation: a Flow application archive must contain
 the production frontend bundle under `META-INF/VAADIN/webapp/`.
 `shaded-jar` and `custom-jar-task` cover archive-task shapes that the
 Flow Gradle plugin must recognise (Shadow's `shadowJar` and any
-user-defined `Jar` subtype); a failure on those projects is a plugin
-regression, not an expected outcome.
+user-defined `Jar` subtype). `custom-frontend-output` mirrors
+`plain-jar` but overrides the plugin's `frontendOutputDirectory` —
+declared `@Input` on both `vaadinPrepareFrontend` and
+`vaadinBuildFrontend`, so a regression in its cache wiring or
+jar-packaging path resolution would surface here. A failure on these
+projects is a plugin regression, not an expected outcome.
 
 ## Scenarios
 
@@ -97,12 +102,12 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 
 ```bash
 # Prime each project's cache by running cold scenarios.
-for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task; do
+for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output; do
   bash scripts/run-project.sh --cache=cold "$p" "$FLOW_VERSION"
 done
 
 # Then validate that each project's cache hits on a clean rebuild.
-for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task; do
+for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output; do
   bash scripts/run-project.sh "$p" "$FLOW_VERSION"
 done
 ```
@@ -172,5 +177,6 @@ the workflow is not exercising what we think it is.
 ├── war/
 ├── spring-boot-jar/
 ├── shaded-jar/
-└── custom-jar-task/
+├── custom-jar-task/
+└── custom-frontend-output/
 ```

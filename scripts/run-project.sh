@@ -193,6 +193,16 @@ case "$project" in
     ARCHIVE_GLOB="build/libs/custom-jar.jar"
     BUNDLE_PREFIX=""
     ;;
+  custom-frontend-output)
+    # Mirrors plain-jar; the project overrides
+    # vaadin.frontendOutputDirectory in build.gradle. The plugin's
+    # jar-packaging logic walks parentFile.parentFile from that path
+    # to stage the bundle, so the in-archive layout still has
+    # META-INF/VAADIN/webapp/ at the root — BUNDLE_PREFIX stays "".
+    BUILD_TASK="build"
+    ARCHIVE_GLOB="build/libs/custom-frontend-output.jar"
+    BUNDLE_PREFIX=""
+    ;;
   *)
     echo "run-project: unknown project '${project}'" >&2
     exit 2
