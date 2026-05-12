@@ -29,6 +29,11 @@
 
 set -euo pipefail
 
+# Print the failing line and command before the shell exits via `set -e`.
+# Makes silent exits (e.g. a substitution returning non-zero under
+# pipefail) immediately diagnosable.
+trap 'rc=$?; echo "run-project: exit ${rc} at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
+
 CLEAR_CACHE=false
 
 while [[ $# -gt 0 ]]; do
@@ -142,8 +147,17 @@ echo "Using gradle binary: ${GRADLE_BIN}"
 
 run_gradle() {
   local log=$1; shift
+  # Disable set -e around the pipeline so we can return gradle's exit
+  # code (PIPESTATUS[0]) rather than having the pipe trigger an exit
+  # before `return` runs. The caller's set -e still applies.
+  set +e
   "$GRADLE_BIN" "$@" "${GRADLE_ARGS[@]}" 2>&1 | tee "$log"
-  return "${PIPESTATUS[0]}"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "run-project: gradle exited ${rc} (see $(pwd)/${log})" >&2
+  fi
+  return "$rc"
 }
 
 assert_archive_has_bundle() {
@@ -154,9 +168,12 @@ assert_archive_has_bundle() {
     echo "FAIL archive not found: ${archive}" >&2
     return 1
   fi
+  # `|| true` so that a no-match grep (exit 1) under pipefail does not
+  # propagate non-zero out of the substitution and silently terminate
+  # the script via set -e.
   local hits
-  hits=$(unzip -l "$archive" | grep -F "${marker}" | wc -l)
-  if [[ "$hits" -eq 0 ]]; then
+  hits=$(unzip -l "$archive" | grep -cF "${marker}" || true)
+  if [[ "${hits:-0}" -eq 0 ]]; then
     echo "FAIL archive ${archive} missing ${marker}" >&2
     unzip -l "$archive" | grep -F "META-INF/VAADIN" >&2 || true
     return 1
@@ -171,8 +188,8 @@ assert_archive_lacks_bundle() {
     return 1
   fi
   local hits
-  hits=$(unzip -l "$archive" | grep -F "META-INF/VAADIN/webapp/" | wc -l || true)
-  if [[ "$hits" -ne 0 ]]; then
+  hits=$(unzip -l "$archive" | grep -cF "META-INF/VAADIN/webapp/" || true)
+  if [[ "${hits:-0}" -ne 0 ]]; then
     echo "FAIL negative project ${project} unexpectedly bundled the frontend:" >&2
     unzip -l "$archive" | grep -F "META-INF/VAADIN/webapp/" >&2
     return 1
