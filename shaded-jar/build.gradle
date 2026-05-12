@@ -16,6 +16,9 @@ repositories {
 dependencies {
     implementation "com.vaadin:flow:${flowVersion}"
     implementation 'org.slf4j:slf4j-simple:2.0.3'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 java {
@@ -32,4 +35,8 @@ application {
 // would otherwise append to every archive filename.
 tasks.withType(Jar).configureEach {
     archiveVersion = ''
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }

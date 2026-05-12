@@ -12,23 +12,26 @@ behaviour going forward.
 
 ## What's in here
 
-| Project           | Plugins                                                    | Task         | Archive layout                          | Expected outcome              |
+| Project           | Plugins                                                    | Task         | Archive layout                          | Archive expectation           |
 |-------------------|------------------------------------------------------------|--------------|------------------------------------------|-------------------------------|
-| `plain-jar`       | `java`, `application`, `com.vaadin.flow`                   | `build`      | `*.jar` (bundle at root)                 | Cache hits across scenarios   |
-| `war`             | `war`, `com.vaadin.flow`                                   | `build`      | `*.war` (bundle at `WEB-INF/classes/`)   | Cache hits across scenarios   |
-| `spring-boot-jar` | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Cache hits across scenarios   |
-| `shaded-jar`      | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar`                              | Bundle **not** in archive     |
-| `custom-jar-task` | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar`                         | Bundle **not** in archive     |
+| `plain-jar`       | `java`, `application`, `com.vaadin.flow`                   | `build`      | `*.jar` (bundle at root)                 | Bundle **in** archive         |
+| `war`             | `war`, `com.vaadin.flow`                                   | `build`      | `*.war` (bundle at `WEB-INF/classes/`)   | Bundle **in** archive         |
+| `spring-boot-jar` | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Bundle **in** archive         |
+| `shaded-jar`      | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** archive         |
+| `custom-jar-task` | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** archive         |
 
-The last two are documented limitations of the current plugin
-(`isVaadinApplicationArchiveTask()` only recognises `jar`, `War`, and
-`BootJar`). They are kept in the suite as negative tests so a future
-plugin change that broadens archive-task detection will surface here.
+All five projects exercise the same cache scenarios and the same
+archive-content expectation: a Flow application archive must contain
+the production frontend bundle under `META-INF/VAADIN/webapp/`.
+`shaded-jar` and `custom-jar-task` cover archive-task shapes that the
+Flow Gradle plugin must recognise (Shadow's `shadowJar` and any
+user-defined `Jar` subtype); a failure on those projects is a plugin
+regression, not an expected outcome.
 
-## Scenarios (positive projects)
+## Scenarios
 
-For each of `plain-jar`, `war`, and `spring-boot-jar`, the suite runs
-four scenarios in order:
+For each project, in **cold** cache mode the suite runs four scenarios
+in order:
 
 | # | Scenario              | Expected `vaadinBuildFrontend` outcome |
 |---|-----------------------|----------------------------------------|
@@ -39,8 +42,13 @@ four scenarios in order:
 
 Scenario D is the negative assertion that proves the cache key is
 sensitive to main-classpath bytecode changes — useful as a guard
-against an over-eager future change that would weaken the cache
-key.
+against an over-eager future change that would weaken the cache key.
+
+In **warm** cache mode (the default) the suite skips A–D and instead
+runs one `clean <build-task>` asserting `:vaadinBuildFrontend ==
+FROM-CACHE`. The warm path is what CI uses to validate that a cache
+written by a previous job (then persisted to and re-fetched from
+Actions cache storage) is usable on a fresh runner.
 
 ## Running locally
 
@@ -74,18 +82,26 @@ cd plain-jar
 unzip -l build/libs/plain-jar.jar | grep META-INF/VAADIN/webapp/
 ```
 
-Or run the scripted scenarios:
+Or run the scripted scenarios. The runner has two cache modes:
 
 ```bash
+# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A/B/C/D.
+bash scripts/run-project.sh --cache=cold plain-jar "$FLOW_VERSION"
+
+# Warm mode (default): leave the cache alone and assert that a
+# clean build hits it. Requires the cache to be populated already.
 bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 ```
-
-Per-project READMEs document the exact commands and expected outcomes
-for each scenario.
 
 ### Run the whole suite
 
 ```bash
+# Prime each project's cache by running cold scenarios.
+for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task; do
+  bash scripts/run-project.sh --cache=cold "$p" "$FLOW_VERSION"
+done
+
+# Then validate that each project's cache hits on a clean rebuild.
 for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task; do
   bash scripts/run-project.sh "$p" "$FLOW_VERSION"
 done
@@ -95,18 +111,10 @@ done
 
 The local Gradle build cache lives at
 `$GRADLE_USER_HOME/caches/build-cache-1/` — default
-`~/.gradle/caches/build-cache-1/`. Wipe it when you want to guarantee a
-cold-cache run (for example, before re-validating that the suite still
-catches the regression the PR fixes).
+`~/.gradle/caches/build-cache-1/`. `--cache=cold` wipes it before
+running; otherwise the script never touches it.
 
-The runner script accepts `--clear-cache` (or `-c`) which wipes the
-cache before starting:
-
-```bash
-bash scripts/run-project.sh --clear-cache plain-jar "$FLOW_VERSION"
-```
-
-Equivalently, do it by hand:
+To wipe by hand:
 
 ```bash
 rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
@@ -125,10 +133,24 @@ is triggered manually via `workflow_dispatch`, with inputs:
 - `flow_repo` (default `vaadin/flow`) — Flow repo (supports forks).
 - `flow_ref` (default `main`) — branch, tag, or SHA.
 
-A matrix runs all five projects in parallel; each job installs the
-specified Flow ref's plugin to its own `~/.m2/repository`, then runs
-`scripts/run-project.sh`. Failed runs upload all `*.log` files for
-inspection.
+The workflow has three job groups:
+
+1. **`build-flow`** — checks out the requested Flow ref and installs
+   the Gradle plugin to `~/.m2/repository`, then uploads those
+   artifacts.
+2. **`scenarios-cold`** — matrix over all 5 projects. Each job
+   downloads the Flow artifacts, runs
+   `scripts/run-project.sh --cache=cold`, and persists the resulting
+   `~/.gradle/caches/build-cache-1` under a run-scoped Actions cache
+   key.
+3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 5
+   projects. Each job restores the matching cold job's cache on a
+   fresh runner and runs `scripts/run-project.sh --cache=warm`. A
+   cache miss is a hard failure (`fail-on-cache-miss: true`) because
+   the assertion is meaningless without a real restoration.
+
+Failed runs upload `cold-<project>-logs` / `warm-<project>-logs`
+artifacts containing the Gradle logs.
 
 ### Validating a Flow PR
 

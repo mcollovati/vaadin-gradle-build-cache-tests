@@ -2,30 +2,40 @@
 # Run build-cache scenarios for one of the test projects.
 #
 # Usage:
-#   run-project.sh [--clear-cache|-c] <project-dir-name> <flow-version>
+#   run-project.sh [--cache=cold|warm] <project-dir-name> <flow-version>
 #
 # Options:
-#   --clear-cache, -c    Wipe the local Gradle build cache
+#   --cache=cold         Wipe the local Gradle build cache
 #                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
-#                        to ~/.gradle/caches/build-cache-1) before running.
-#                        Use this to guarantee a cold start when validating
-#                        FROM-CACHE assertions.
+#                        to ~/.gradle/caches/build-cache-1) before running,
+#                        then run scenarios A/B/C/D. Use this to guarantee
+#                        a cold start when validating cache-population
+#                        behaviour.
+#   --cache=warm         Default. Do NOT touch the local Gradle build cache.
+#                        Run only the warm-cache assertion: clean build
+#                        -> :vaadinBuildFrontend must come FROM-CACHE.
+#                        Expects the cache to be already populated (e.g.
+#                        from a prior cold run or a restored Actions cache).
 #   --help, -h           Show this help and exit.
 #
 # Env:
 #   GRADLE_BIN           Override the Gradle binary (default: ./gradlew in
 #                        the project, else system 'gradle').
-#   GRADLE_USER_HOME     Standard Gradle override. The cleared cache path
+#   GRADLE_USER_HOME     Standard Gradle override. The wiped cache path
 #                        is "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1".
 #
-# Positive projects (plain-jar, war, spring-boot-jar) exercise scenarios:
+# All five projects exercise the same scenarios in cold mode and the
+# same single warm-cache assertion in warm mode:
 #   A) Cold-cache restore: build -> rm -rf build/ -> build -> FROM-CACHE
 #   B) Add test class:     rm -rf build/ -> add test -> build -> FROM-CACHE
 #   C) Edit resource:      rm -rf build/ -> edit messages.properties -> build -> FROM-CACHE
 #   D) Modify @Route Java: rm -rf build/ -> edit HelloView -> build -> NOT_FROM_CACHE
 #
-# Negative projects (shaded-jar, custom-jar-task) run only a single build and
-# assert that the produced archive does NOT contain META-INF/VAADIN/webapp/.
+# Every project's archive must contain META-INF/VAADIN/webapp/ after the
+# build. A correctly behaving Flow Gradle plugin wires every Vaadin
+# application archive task (jar, war, bootJar, shadowJar, custom Jar
+# subclasses) to vaadinBuildFrontend; failures here surface plugin
+# regressions that drop or narrow that wiring.
 
 set -euo pipefail
 
@@ -80,13 +90,34 @@ flush_cleanups() {
 
 trap flush_cleanups EXIT
 
-CLEAR_CACHE=false
+CACHE_MODE=warm
+
+# Validate and assign a --cache value (cold or warm).
+set_cache_mode() {
+  case "$1" in
+    cold|warm)
+      CACHE_MODE=$1
+      ;;
+    *)
+      echo "run-project: --cache value must be 'cold' or 'warm' (got '$1')" >&2
+      exit 2
+      ;;
+  esac
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --clear-cache|-c)
-      CLEAR_CACHE=true
+    --cache=*)
+      set_cache_mode "${1#--cache=}"
       shift
+      ;;
+    --cache)
+      if [[ $# -lt 2 ]]; then
+        echo "run-project: --cache requires a value (cold|warm)" >&2
+        exit 2
+      fi
+      set_cache_mode "$2"
+      shift 2
       ;;
     --help|-h)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -107,7 +138,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 [--clear-cache|-c] <project-dir-name> <flow-version>" >&2
+  echo "usage: $0 [--cache=cold|warm] <project-dir-name> <flow-version>" >&2
   exit 2
 fi
 
@@ -123,7 +154,7 @@ if [[ ! -d "$project_dir" ]]; then
   exit 2
 fi
 
-if [[ "$CLEAR_CACHE" == "true" ]]; then
+if [[ "$CACHE_MODE" == "cold" ]]; then
   cache_dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
   if [[ -d "$cache_dir" ]]; then
     echo "Clearing local Gradle build cache at ${cache_dir}"
@@ -136,7 +167,6 @@ fi
 cd "$project_dir"
 
 # Per-project parameters.
-IS_NEGATIVE=false
 case "$project" in
   plain-jar)
     BUILD_TASK="build"
@@ -157,13 +187,11 @@ case "$project" in
     BUILD_TASK="shadowJar"
     ARCHIVE_GLOB="build/libs/shaded-jar-all.jar"
     BUNDLE_PREFIX=""
-    IS_NEGATIVE=true
     ;;
   custom-jar-task)
     BUILD_TASK="customJar"
     ARCHIVE_GLOB="build/libs/custom-jar.jar"
     BUNDLE_PREFIX=""
-    IS_NEGATIVE=true
     ;;
   *)
     echo "run-project: unknown project '${project}'" >&2
@@ -227,39 +255,26 @@ assert_archive_has_bundle() {
   printf '%sOK  %s archive %s contains %s (%s entries)\n' "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$marker" "$hits"
 }
 
-assert_archive_lacks_bundle() {
-  local archive=$1
-  if [[ ! -f "$archive" ]]; then
-    printf '%sFAIL%s archive not found: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
-    return 1
-  fi
-  local hits
-  hits=$(unzip -l "$archive" | grep -cF "META-INF/VAADIN/webapp/" || true)
-  if [[ "${hits:-0}" -ne 0 ]]; then
-    printf '%sFAIL%s negative project %s unexpectedly bundled the frontend:\n' "$C_RED$C_BOLD" "$C_RESET" "$project" >&2
-    unzip -l "$archive" | grep -F "META-INF/VAADIN/webapp/" >&2
-    return 1
-  fi
-  printf '%sOK  %s archive %s does not contain META-INF/VAADIN/webapp/ (expected for %s)\n' "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$project"
-}
-
 assert_outcome() {
   bash "${script_dir}/assert-task-outcome.sh" "$@"
 }
 
 #---------------------------------------------------------------------
-# Negative projects: build once, assert bundle absence.
+# Warm-cache mode: skip A/B/C/D, run only the FROM-CACHE assertion.
+# Mirrors what happens when a fresh CI runner restores a build-cache
+# from Actions cache storage and is then asked to build.
 #---------------------------------------------------------------------
-if [[ "$IS_NEGATIVE" == "true" ]]; then
-  section "${project}: negative single-build run"
-  run_gradle build.log clean "$BUILD_TASK"
-  assert_archive_lacks_bundle "$ARCHIVE_GLOB"
-  success_banner "${project}: negative assertion passed"
+if [[ "$CACHE_MODE" == "warm" ]]; then
+  section "${project}: warm-cache assertion"
+  run_gradle warm.log clean "$BUILD_TASK"
+  assert_outcome warm.log ":vaadinBuildFrontend" FROM-CACHE
+  assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  success_banner "${project}: warm-cache assertion passed"
   exit 0
 fi
 
 #---------------------------------------------------------------------
-# Positive projects: scenarios A, B, C, D.
+# Cold-cache mode: scenarios A, B, C, D — uniform across all projects.
 #---------------------------------------------------------------------
 
 section "${project}: Scenario A (cold-cache restore)"

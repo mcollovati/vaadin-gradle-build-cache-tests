@@ -14,6 +14,9 @@ repositories {
 dependencies {
     implementation "com.vaadin:flow:${flowVersion}"
     implementation 'org.slf4j:slf4j-simple:2.0.3'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 java {
@@ -28,10 +31,14 @@ tasks.withType(Jar).configureEach {
     archiveVersion = ''
 }
 
-// A user-defined Jar task. The Flow plugin's isVaadinApplicationArchiveTask()
-// only recognises `jar` by name (plus War / BootJar by type), so this custom
-// task is NOT wired up to vaadinBuildFrontend and the Vaadin bundle is NOT
-// included in its output.
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// User-defined Jar task — equivalent to the default `jar` task with a
+// custom archive base name. A correctly behaving Flow Gradle plugin
+// wires this task to vaadinBuildFrontend so the Vaadin bundle ends up
+// in the produced archive.
 tasks.register('customJar', Jar) {
     archiveBaseName = 'custom-jar'
     from sourceSets.main.output
