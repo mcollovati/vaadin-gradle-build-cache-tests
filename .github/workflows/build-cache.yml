@@ -1,4 +1,5 @@
 name: Gradle build-cache validation
+run-name: "Gradle build-cache validation - ${{ github.event.inputs.flow_repo || 'vaadin/flow' }}@${{ github.event.inputs.flow_ref || 'main' }}"
 
 on:
   workflow_dispatch:
@@ -74,6 +75,24 @@ jobs:
           version=$(mvn -N -q -B -ntp help:evaluate -Dexpression=project.version -DforceStdout)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Resolved FLOW_VERSION=${version}"
+
+      - name: Write Flow build summary
+        env:
+          REPO: ${{ github.event.inputs.flow_repo || 'vaadin/flow' }}
+          REF: ${{ github.event.inputs.flow_ref || 'main' }}
+          SHA: ${{ steps.flow-sha.outputs.sha }}
+          VERSION: ${{ steps.flow-version.outputs.version }}
+        run: |
+          {
+            echo "## Flow build"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Repository | [\`${REPO}\`](https://github.com/${REPO}) |"
+            echo "| Ref | \`${REF}\` |"
+            echo "| Resolved SHA | [\`${SHA}\`](https://github.com/${REPO}/commit/${SHA}) |"
+            echo "| Maven version | \`${VERSION}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Package only the Vaadin-group artifacts published by the install
       # above. Everything else under ~/.m2/repository is Maven Central
