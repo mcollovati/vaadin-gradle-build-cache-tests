@@ -39,6 +39,8 @@ tasks.named('jar') {
     enabled = false
 }
 
+// No project version is set, so drop the "-unspecified" suffix Gradle
+// would otherwise append to every archive filename.
 tasks.withType(Jar).configureEach {
     archiveVersion = ''
 }
