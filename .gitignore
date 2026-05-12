@@ -29,6 +29,7 @@ vite.generated.ts
 # --- Build-cache scenario logs (written by scripts/run-project.sh) -
 */scenario-*.log
 */build.log
+*/warm.log
 
 # --- IDEs ----------------------------------------------------------
 .idea/
