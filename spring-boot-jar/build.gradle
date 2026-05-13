@@ -31,6 +31,8 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)
     }
+    withJavadocJar()
+    withSourcesJar()
 }
 
 // Spring Boot recommends disabling the plain jar to avoid shipping two

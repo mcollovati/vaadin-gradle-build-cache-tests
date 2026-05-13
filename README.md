@@ -14,12 +14,12 @@ behaviour going forward.
 
 | Project                  | Plugins                                                    | Task         | Archive layout                          | Archive expectation           |
 |--------------------------|------------------------------------------------------------|--------------|------------------------------------------|-------------------------------|
-| `plain-jar`              | `java`, `application`, `com.vaadin.flow`                   | `build`      | `*.jar` (bundle at root)                 | Bundle **in** archive         |
-| `war`                    | `war`, `com.vaadin.flow`                                   | `build`      | `*.war` (bundle at `WEB-INF/classes/`)   | Bundle **in** archive         |
-| `spring-boot-jar`        | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Bundle **in** archive         |
-| `shaded-jar`             | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** archive         |
-| `custom-jar-task`        | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** archive         |
-| `custom-frontend-output` | `java`, `application`, `com.vaadin.flow` + custom `vaadin.frontendOutputDirectory` | `build`      | `*.jar` (bundle at root)                 | Bundle **in** archive         |
+| `plain-jar`              | `java`, `application`, `com.vaadin.flow`                   | `build`      | `*.jar` (bundle at root)                 | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `war`                    | `war`, `com.vaadin.flow`                                   | `build`      | `*.war` (bundle at `WEB-INF/classes/`)   | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `spring-boot-jar`        | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `shaded-jar`             | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `custom-jar-task`        | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `custom-frontend-output` | `java`, `application`, `com.vaadin.flow` + custom `vaadin.frontendOutputDirectory` | `build`      | `*.jar` (bundle at root)                 | Bundle **in** main archive; sources/javadoc jars **clean** |
 
 All six projects exercise the same cache scenarios and the same
 archive-content expectation: a Flow application archive must contain
@@ -32,6 +32,15 @@ declared `@Input` on both `vaadinPrepareFrontend` and
 `vaadinBuildFrontend`, so a regression in its cache wiring or
 jar-packaging path resolution would surface here. A failure on these
 projects is a plugin regression, not an expected outcome.
+
+Every project also publishes a `-sources.jar` and a `-javadoc.jar` via
+`java { withSourcesJar(); withJavadocJar() }`. The runner asserts those
+auxiliary archives contain **no** `META-INF/VAADIN/` entries — a
+symmetric negative guard against the Flow Gradle plugin wiring its
+bundle-staging into non-application `Jar` tasks. A failure here means
+the plugin is leaking the production frontend bundle (or `flow-build-info.json`,
+`stats.json`, etc.) into archives that should ship only `.java` sources
+or javadoc HTML.
 
 ## Scenarios
 

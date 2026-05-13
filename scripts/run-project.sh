@@ -36,6 +36,12 @@
 # application archive task (jar, war, bootJar, shadowJar, custom Jar
 # subclasses) to vaadinBuildFrontend; failures here surface plugin
 # regressions that drop or narrow that wiring.
+#
+# Symmetric negative assertion: each project's sourcesJar and javadocJar
+# must contain NO META-INF/VAADIN/* entries. A regression that
+# over-eagerly wires bundle-staging into auxiliary Jar tasks (so the
+# frontend bundle, flow-build-info.json, stats.json, etc. leak into
+# sources/javadoc archives) surfaces here.
 
 set -euo pipefail
 
@@ -172,26 +178,36 @@ case "$project" in
     BUILD_TASK="build"
     ARCHIVE_GLOB="build/libs/plain-jar.jar"
     BUNDLE_PREFIX=""
+    SOURCES_JAR="build/libs/plain-jar-sources.jar"
+    JAVADOC_JAR="build/libs/plain-jar-javadoc.jar"
     ;;
   war)
     BUILD_TASK="build"
     ARCHIVE_GLOB="build/libs/war.war"
     BUNDLE_PREFIX="WEB-INF/classes/"
+    SOURCES_JAR="build/libs/war-sources.jar"
+    JAVADOC_JAR="build/libs/war-javadoc.jar"
     ;;
   spring-boot-jar)
     BUILD_TASK="bootJar"
     ARCHIVE_GLOB="build/libs/spring-boot-jar.jar"
     BUNDLE_PREFIX="BOOT-INF/classes/"
+    SOURCES_JAR="build/libs/spring-boot-jar-sources.jar"
+    JAVADOC_JAR="build/libs/spring-boot-jar-javadoc.jar"
     ;;
   shaded-jar)
     BUILD_TASK="shadowJar"
     ARCHIVE_GLOB="build/libs/shaded-jar-all.jar"
     BUNDLE_PREFIX=""
+    SOURCES_JAR="build/libs/shaded-jar-sources.jar"
+    JAVADOC_JAR="build/libs/shaded-jar-javadoc.jar"
     ;;
   custom-jar-task)
     BUILD_TASK="customJar"
     ARCHIVE_GLOB="build/libs/custom-jar.jar"
     BUNDLE_PREFIX=""
+    SOURCES_JAR="build/libs/custom-jar-task-sources.jar"
+    JAVADOC_JAR="build/libs/custom-jar-task-javadoc.jar"
     ;;
   custom-frontend-output)
     # Mirrors plain-jar; the project overrides
@@ -202,6 +218,8 @@ case "$project" in
     BUILD_TASK="build"
     ARCHIVE_GLOB="build/libs/custom-frontend-output.jar"
     BUNDLE_PREFIX=""
+    SOURCES_JAR="build/libs/custom-frontend-output-sources.jar"
+    JAVADOC_JAR="build/libs/custom-frontend-output-javadoc.jar"
     ;;
   *)
     echo "run-project: unknown project '${project}'" >&2
@@ -265,6 +283,30 @@ assert_archive_has_bundle() {
   printf '%sOK  %s archive %s contains %s (%s entries)\n' "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$marker" "$hits"
 }
 
+# Negative counterpart of assert_archive_has_bundle: sources and javadoc
+# jars must be clean of every META-INF/VAADIN/* entry the Flow plugin
+# stages (frontend bundle, flow-build-info.json, stats.json, etc.). A
+# regression that wires bundle-staging into auxiliary Jar tasks surfaces
+# here.
+assert_archive_lacks_vaadin_staging() {
+  local archive=$1
+  local marker="META-INF/VAADIN/"
+  if [[ ! -f "$archive" ]]; then
+    printf '%sFAIL%s archive not found: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
+    return 1
+  fi
+  local hits
+  hits=$(unzip -l "$archive" | grep -cF "$marker" || true)
+  if [[ "${hits:-0}" -gt 0 ]]; then
+    printf '%sFAIL%s archive %s must not contain %s (%s entries)\n' \
+      "$C_RED$C_BOLD" "$C_RESET" "$archive" "$marker" "$hits" >&2
+    unzip -l "$archive" | grep -F "$marker" >&2 || true
+    return 1
+  fi
+  printf '%sOK  %s archive %s clean of %s\n' \
+    "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$marker"
+}
+
 assert_outcome() {
   bash "${script_dir}/assert-task-outcome.sh" "$@"
 }
@@ -276,9 +318,11 @@ assert_outcome() {
 #---------------------------------------------------------------------
 if [[ "$CACHE_MODE" == "warm" ]]; then
   section "${project}: warm-cache assertion"
-  run_gradle warm.log clean "$BUILD_TASK"
+  run_gradle warm.log clean "$BUILD_TASK" sourcesJar javadocJar
   assert_outcome warm.log ":vaadinBuildFrontend" FROM-CACHE
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+  assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
   success_banner "${project}: warm-cache assertion passed"
   exit 0
 fi
@@ -288,14 +332,18 @@ fi
 #---------------------------------------------------------------------
 
 section "${project}: Scenario A (cold-cache restore)"
-run_gradle scenario-a-1.log clean "$BUILD_TASK"
+run_gradle scenario-a-1.log clean "$BUILD_TASK" sourcesJar javadocJar
 assert_outcome scenario-a-1.log ":vaadinBuildFrontend" SUCCESS
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 
 rm -rf build/
-run_gradle scenario-a-2.log "$BUILD_TASK"
+run_gradle scenario-a-2.log "$BUILD_TASK" sourcesJar javadocJar
 assert_outcome scenario-a-2.log ":vaadinBuildFrontend" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 
 section "${project}: Scenario B (add test class)"
 rm -rf build/
@@ -315,9 +363,11 @@ public class AddedTest {
     }
 }
 EOF
-run_gradle scenario-b.log "$BUILD_TASK"
+run_gradle scenario-b.log "$BUILD_TASK" sourcesJar javadocJar
 assert_outcome scenario-b.log ":vaadinBuildFrontend" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 
 section "${project}: Scenario C (edit resource)"
 # Use messages.properties — a resource file that is NOT declared as an
@@ -331,9 +381,11 @@ cp "$resource" "$resource.bak"
 # still leaves the working tree clean (EXIT trap → flush_cleanups).
 register_cleanup "[[ -f '$resource.bak' ]] && mv '$resource.bak' '$resource'"
 echo "# scenario C marker $(date -u +%s)" >> "$resource"
-run_gradle scenario-c.log "$BUILD_TASK"
+run_gradle scenario-c.log "$BUILD_TASK" sourcesJar javadocJar
 assert_outcome scenario-c.log ":vaadinBuildFrontend" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 
 section "${project}: Scenario D (modify @Route Java)"
 rm -rf build/
@@ -344,8 +396,10 @@ cp "$view" "$view.bak"
 register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 # Edit the heading literal so bytecode changes.
 sed -i 's/Hello, Vaadin!/Hello, Vaadin (edited)!/' "$view"
-run_gradle scenario-d.log "$BUILD_TASK"
+run_gradle scenario-d.log "$BUILD_TASK" sourcesJar javadocJar
 assert_outcome scenario-d.log ":vaadinBuildFrontend" NOT_FROM_CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 
 success_banner "${project}: all scenarios passed"

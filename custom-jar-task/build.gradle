@@ -23,6 +23,8 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)
     }
+    withJavadocJar()
+    withSourcesJar()
 }
 
 // No project version is set, so drop the "-unspecified" suffix Gradle
