@@ -15,9 +15,12 @@ real assertions live in `scripts/`.
 
 ## Architecture in one paragraph
 
-`scripts/run-project.sh` drives every subproject through the same
+`scripts/run-project.sh` drives one subproject through the same
 fixed scenario set (A/B/C/D in cold mode, single FROM-CACHE assertion
-in warm mode). It looks up project-specific values (build task,
+in warm mode); `scripts/run-suite.sh` is a thin wrapper that runs
+`run-project.sh` over every subproject (canonical list in its
+`ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
+project-specific values (build task,
 archive path, in-archive bundle prefix) from a `case` statement keyed
 on the project dir name — so adding a new subproject means adding a
 matching `case` branch alongside the project's `build.gradle`, plus a
@@ -115,7 +118,8 @@ what we think.
    bundle (`""` for jars, `WEB-INF/classes/` for wars,
    `BOOT-INF/classes/` for Spring Boot).
 3. Add `new-project` to both matrix lists in
-   `.github/workflows/build-cache.yml` (cold and warm).
+   `.github/workflows/build-cache.yml` (cold and warm), and to the
+   `ALL_PROJECTS` array in `scripts/run-suite.sh`.
 4. Update the project table in `README.md`.
 
 ## Conventions worth knowing

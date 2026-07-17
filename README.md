@@ -109,15 +109,30 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 
 ### Run the whole suite
 
+`scripts/run-suite.sh` drives `run-project.sh` over every project and
+prints a per-project PASS/FAIL summary (exit non-zero if any failed):
+
 ```bash
-# Prime each project's cache by running cold scenarios.
+# Run cold scenarios (A/B/C/D) for every project. This is the complete
+# local validation — each project's cold run primes and hits its own
+# cache within scenario A, so no separate warm phase is needed locally.
+bash scripts/run-suite.sh "$FLOW_VERSION"
+
+# Options:
+bash scripts/run-suite.sh --fail-fast "$FLOW_VERSION"              # stop at first failure
+bash scripts/run-suite.sh --projects="plain-jar war" "$FLOW_VERSION"  # subset
+```
+
+`--cache=warm` runs the warm assertion for every project, but note that
+cold mode wipes the *shared* `build-cache-1` on each invocation, so a
+local cold-all run does not leave every project's cache in place — the
+last cold project wins. Warm-all is a CI concern, where each project's
+cache is persisted and restored in isolation (see the workflow below).
+To reproduce the old two-loop behaviour by hand:
+
+```bash
 for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output; do
   bash scripts/run-project.sh --cache=cold "$p" "$FLOW_VERSION"
-done
-
-# Then validate that each project's cache hits on a clean rebuild.
-for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output; do
-  bash scripts/run-project.sh "$p" "$FLOW_VERSION"
 done
 ```
 
@@ -180,6 +195,7 @@ the workflow is not exercising what we think it is.
 ├── README.md                          # this file
 ├── .github/workflows/build-cache.yml
 ├── scripts/
+│   ├── run-suite.sh
 │   ├── run-project.sh
 │   └── assert-task-outcome.sh
 ├── plain-jar/
