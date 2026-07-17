@@ -53,7 +53,7 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 Warm mode requires the cache to already be populated (cold run first,
 or restored Actions cache in CI). The runner's per-project parameters
 (build task, archive path, in-archive prefix) live in the `case`
-statement at `scripts/run-project.sh:170`.
+statement at `scripts/run-project.sh:176`.
 
 ## Scenarios (cold mode)
 
