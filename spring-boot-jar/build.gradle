@@ -47,6 +47,12 @@ tasks.withType(Jar).configureEach {
     archiveVersion = ''
 }
 
+// Fixture sources carry no Javadoc comments on purpose; silence the
+// doclint "missing comment" warnings so the withJavadocJar() build is clean.
+tasks.withType(Javadoc).configureEach {
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
 tasks.named('test') {
     useJUnitPlatform()
 }
