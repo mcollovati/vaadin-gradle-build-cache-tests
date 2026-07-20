@@ -124,7 +124,6 @@ jobs:
           - shaded-jar
           - custom-jar-task
           - custom-frontend-output
-          - custom-frontend-output-flat
 
     steps:
       - name: Checkout test-projects
@@ -212,7 +211,6 @@ jobs:
           - shaded-jar
           - custom-jar-task
           - custom-frontend-output
-          - custom-frontend-output-flat
 
     steps:
       - name: Checkout test-projects

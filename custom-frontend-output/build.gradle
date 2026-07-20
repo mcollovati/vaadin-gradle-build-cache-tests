@@ -36,19 +36,10 @@ vaadin {
     // Override the default frontendOutputDirectory
     // (build/vaadin-build-frontend/META-INF/VAADIN/webapp) to validate
     // that the Flow Gradle plugin's caching and jar-packaging logic
-    // honour a custom path.
-    //
-    // The path is read from the -PcustomFrontendOutputDirectory Gradle
-    // property so the same module can be driven two ways:
-    //   * default (the `custom-frontend-output` runner project): a path
-    //     that still ends in META-INF/VAADIN/webapp.
-    //   * overridden (the `custom-frontend-output-flat` runner project,
-    //     which passes -PcustomFrontendOutputDirectory): a path that
-    //     does NOT end in META-INF/VAADIN/webapp, exercising the
-    //     plugin's jar-packaging path resolution when it cannot assume
-    //     the conventional trailing segments.
-    frontendOutputDirectory = file(providers.gradleProperty('customFrontendOutputDirectory')
-            .getOrElse('build/custom-frontend-output/META-INF/VAADIN/webapp'))
+    // honour a custom path. The trailing META-INF/VAADIN/webapp
+    // segments are required: FlowPlugin walks parentFile.parentFile
+    // from this directory to find the Jar source root.
+    frontendOutputDirectory = file("build/custom-frontend-output/META-INF/VAADIN/webapp")
 }
 
 // No project version is set, so drop the "-unspecified" suffix Gradle

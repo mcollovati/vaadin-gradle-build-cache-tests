@@ -24,13 +24,7 @@ project-specific values (build task,
 archive path, in-archive bundle prefix) from a `case` statement keyed
 on the project dir name — so adding a new subproject means adding a
 matching `case` branch alongside the project's `build.gradle`, plus a
-new entry in the matrix in `.github/workflows/build-cache.yml`. A
-branch can also define a *virtual* project that reuses another
-module's directory and differs only by Gradle properties, by setting
-`PROJECT_SRC` (the module dir to build in) and `EXTRA_GRADLE_ARGS`
-(extra flags appended to every invocation) — `custom-frontend-output-flat`
-does this to drive the `custom-frontend-output` module with a
-non-standard `-PcustomFrontendOutputDirectory`.
+new entry in the matrix in `.github/workflows/build-cache.yml`.
 Assertions about Gradle task outcomes go through
 `scripts/assert-task-outcome.sh`, which parses `--console=plain` logs
 for `> Task :foo` lines and matches the suffix (`FROM-CACHE`,
@@ -62,7 +56,7 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 Warm mode requires the cache to already be populated (cold run first,
 or restored Actions cache in CI). The runner's per-project parameters
 (build task, archive path, in-archive prefix) live in the `case`
-statement at `scripts/run-project.sh:164`.
+statement at `scripts/run-project.sh:176`.
 
 ## Scenarios (cold mode)
 
