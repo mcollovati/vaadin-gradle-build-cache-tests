@@ -19,9 +19,10 @@ behaviour going forward.
 | `spring-boot-jar`        | `org.springframework.boot`, `com.vaadin.flow`              | `bootJar`    | `*.jar` (bundle at `BOOT-INF/classes/`)  | Bundle **in** main archive; sources/javadoc jars **clean** |
 | `shaded-jar`             | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** main archive; sources/javadoc jars **clean** |
 | `custom-jar-task`        | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** main archive; sources/javadoc jars **clean** |
-| `custom-frontend-output` | `java`, `application`, `com.vaadin.flow` + custom `vaadin.frontendOutputDirectory` | `build`      | `*.jar` (bundle at root)                 | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `custom-frontend-output` | `java`, `application`, `com.vaadin.flow` + custom `vaadin.frontendOutputDirectory` (ends in `META-INF/VAADIN/webapp`) | `build`      | `*.jar` (bundle at root)                 | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `custom-frontend-output-flat` | reuses the `custom-frontend-output` module; overrides `vaadin.frontendOutputDirectory` to a path that does **not** end in `META-INF/VAADIN/webapp` | `build`      | `*.jar` (bundle at root)                 | Bundle **in** main archive; sources/javadoc jars **clean** |
 
-All six projects exercise the same cache scenarios and the same
+All seven projects exercise the same cache scenarios and the same
 archive-content expectation: a Flow application archive must contain
 the production frontend bundle under `META-INF/VAADIN/webapp/`.
 `shaded-jar` and `custom-jar-task` cover archive-task shapes that the
@@ -30,7 +31,15 @@ user-defined `Jar` subtype). `custom-frontend-output` mirrors
 `plain-jar` but overrides the plugin's `frontendOutputDirectory` —
 declared `@Input` on both `vaadinPrepareFrontend` and
 `vaadinBuildFrontend`, so a regression in its cache wiring or
-jar-packaging path resolution would surface here. A failure on these
+jar-packaging path resolution would surface here.
+`custom-frontend-output-flat` reuses that same module but overrides
+`frontendOutputDirectory` (via `-PcustomFrontendOutputDirectory`) to a
+path that does **not** end in `META-INF/VAADIN/webapp`: the plugin must
+still stage the production bundle at `META-INF/VAADIN/webapp/` inside
+the archive regardless of where the frontend build writes on disk. A
+regression that keys the in-archive location off the literal
+`frontendOutputDirectory` segments — or that silently drops the bundle
+when those segments are absent — surfaces here. A failure on these
 projects is a plugin regression, not an expected outcome.
 
 Every project also publishes a `-sources.jar` and a `-javadoc.jar` via
@@ -131,7 +140,7 @@ cache is persisted and restored in isolation (see the workflow below).
 To reproduce the old two-loop behaviour by hand:
 
 ```bash
-for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output; do
+for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output custom-frontend-output-flat; do
   bash scripts/run-project.sh --cache=cold "$p" "$FLOW_VERSION"
 done
 ```
@@ -167,12 +176,12 @@ The workflow has three job groups:
 1. **`build-flow`** — checks out the requested Flow ref and installs
    the Gradle plugin to `~/.m2/repository`, then uploads those
    artifacts.
-2. **`scenarios-cold`** — matrix over all 5 projects. Each job
+2. **`scenarios-cold`** — matrix over all projects. Each job
    downloads the Flow artifacts, runs
    `scripts/run-project.sh --cache=cold`, and persists the resulting
    `~/.gradle/caches/build-cache-1` under a run-scoped Actions cache
    key.
-3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 5
+3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all
    projects. Each job restores the matching cold job's cache on a
    fresh runner and runs `scripts/run-project.sh --cache=warm`. A
    cache miss is a hard failure (`fail-on-cache-miss: true`) because
@@ -203,5 +212,5 @@ the workflow is not exercising what we think it is.
 ├── spring-boot-jar/
 ├── shaded-jar/
 ├── custom-jar-task/
-└── custom-frontend-output/
+└── custom-frontend-output/         # also drives custom-frontend-output-flat
 ```

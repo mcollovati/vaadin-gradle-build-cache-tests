@@ -52,6 +52,7 @@ ALL_PROJECTS=(
   shaded-jar
   custom-jar-task
   custom-frontend-output
+  custom-frontend-output-flat
 )
 
 CACHE_MODE=cold

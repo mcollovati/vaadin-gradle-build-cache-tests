@@ -24,7 +24,7 @@
 #   GRADLE_USER_HOME     Standard Gradle override. The wiped cache path
 #                        is "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1".
 #
-# All five projects exercise the same scenarios in cold mode and the
+# Every project exercises the same scenarios in cold mode and the
 # same single warm-cache assertion in warm mode:
 #   A) Cold-cache restore: build -> rm -rf build/ -> build -> FROM-CACHE
 #   B) Add test class:     rm -rf build/ -> add test -> build -> FROM-CACHE
@@ -153,26 +153,14 @@ flow_version=$2
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 script_dir="${repo_root}/scripts"
-project_dir="${repo_root}/${project}"
 
-if [[ ! -d "$project_dir" ]]; then
-  echo "run-project: unknown project '${project}'" >&2
-  exit 2
-fi
-
-if [[ "$CACHE_MODE" == "cold" ]]; then
-  cache_dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
-  if [[ -d "$cache_dir" ]]; then
-    echo "Clearing local Gradle build cache at ${cache_dir}"
-    rm -rf "$cache_dir"
-  else
-    echo "Local Gradle build cache not present at ${cache_dir}; nothing to clear"
-  fi
-fi
-
-cd "$project_dir"
-
-# Per-project parameters.
+# Per-project parameters. PROJECT_SRC is the module directory the
+# project builds in; it defaults to the project name, but a "virtual"
+# project — one that reuses another module's directory and differs only
+# by Gradle properties — can point it elsewhere. EXTRA_GRADLE_ARGS are
+# appended to every Gradle invocation for the project.
+PROJECT_SRC="$project"
+EXTRA_GRADLE_ARGS=()
 case "$project" in
   plain-jar)
     BUILD_TASK="build"
@@ -211,10 +199,31 @@ case "$project" in
     ;;
   custom-frontend-output)
     # Mirrors plain-jar; the project overrides
-    # vaadin.frontendOutputDirectory in build.gradle. The plugin's
-    # jar-packaging logic walks parentFile.parentFile from that path
-    # to stage the bundle, so the in-archive layout still has
-    # META-INF/VAADIN/webapp/ at the root — BUNDLE_PREFIX stays "".
+    # vaadin.frontendOutputDirectory (build.gradle reads the
+    # -PcustomFrontendOutputDirectory property, defaulting to a path
+    # that still ends in META-INF/VAADIN/webapp). The plugin's
+    # jar-packaging logic walks up from that path to stage the bundle,
+    # so the in-archive layout still has META-INF/VAADIN/webapp/ at the
+    # root — BUNDLE_PREFIX stays "".
+    BUILD_TASK="build"
+    ARCHIVE_GLOB="build/libs/custom-frontend-output.jar"
+    BUNDLE_PREFIX=""
+    SOURCES_JAR="build/libs/custom-frontend-output-sources.jar"
+    JAVADOC_JAR="build/libs/custom-frontend-output-javadoc.jar"
+    ;;
+  custom-frontend-output-flat)
+    # Virtual project: reuses the custom-frontend-output module but
+    # overrides vaadin.frontendOutputDirectory to a path that does NOT
+    # end in META-INF/VAADIN/webapp (here: build/flat-frontend-output).
+    # A correct plugin must still stage the production bundle at
+    # META-INF/VAADIN/webapp/ inside the archive regardless of where
+    # the frontend build writes on disk, so BUNDLE_PREFIX stays "" and
+    # assert_archive_has_bundle must pass. A regression that keys the
+    # in-archive location off the literal frontendOutputDirectory
+    # segments (or that silently drops the bundle when they are absent)
+    # surfaces here.
+    PROJECT_SRC="custom-frontend-output"
+    EXTRA_GRADLE_ARGS=(-PcustomFrontendOutputDirectory=build/flat-frontend-output)
     BUILD_TASK="build"
     ARCHIVE_GLOB="build/libs/custom-frontend-output.jar"
     BUNDLE_PREFIX=""
@@ -227,6 +236,25 @@ case "$project" in
     ;;
 esac
 
+project_dir="${repo_root}/${PROJECT_SRC}"
+
+if [[ ! -d "$project_dir" ]]; then
+  echo "run-project: project directory not found: ${project_dir}" >&2
+  exit 2
+fi
+
+if [[ "$CACHE_MODE" == "cold" ]]; then
+  cache_dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
+  if [[ -d "$cache_dir" ]]; then
+    echo "Clearing local Gradle build cache at ${cache_dir}"
+    rm -rf "$cache_dir"
+  else
+    echo "Local Gradle build cache not present at ${cache_dir}; nothing to clear"
+  fi
+fi
+
+cd "$project_dir"
+
 GRADLE_ARGS=(
   "--build-cache"
   "--console=plain"
@@ -234,6 +262,11 @@ GRADLE_ARGS=(
   "-Pvaadin.productionMode"
   "-PflowVersion=${flow_version}"
 )
+# Per-project extras (e.g. the custom-frontend-output-flat override).
+# Guard the expansion so an empty array is safe under `set -u`.
+if [[ ${#EXTRA_GRADLE_ARGS[@]} -gt 0 ]]; then
+  GRADLE_ARGS+=("${EXTRA_GRADLE_ARGS[@]}")
+fi
 
 # Prefer the project's Gradle wrapper if present so the suite works
 # without a system Gradle install. Fall back to system `gradle`.
