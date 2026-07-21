@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+        maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+    }
+    // Published mode: apply the Vaadin platform plugin (id 'com.vaadin') at
+    // the platform version. Gradle resolves the matching flow-gradle-plugin
+    // itself, so the plugin version is the Vaadin version, never the Flow
+    // version.
+    def vaadinVersion = providers.gradleProperty('vaadinVersion').getOrElse('25.2.3')
+    plugins {
+        id 'com.vaadin' version "${vaadinVersion}"
+    }
+}
+
+rootProject.name = 'spring-boot-jar'

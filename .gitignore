@@ -27,9 +27,11 @@ vite.generated.ts
 .vaadin/
 
 # --- Build-cache scenario logs (written by scripts/run-project.sh) -
-*/scenario-*.log
-*/build.log
-*/warm.log
+# ** so the nested platform/<project>/ logs are matched as well as the
+# root-level source-mode projects.
+**/scenario-*.log
+**/build.log
+**/warm.log
 
 # --- IDEs ----------------------------------------------------------
 .idea/

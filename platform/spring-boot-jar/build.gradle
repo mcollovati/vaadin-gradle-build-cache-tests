@@ -1,0 +1,63 @@
+// Published-artifact counterpart of ../../spring-boot-jar. See
+// ../plain-jar/build.gradle for the rationale: same fixture sources
+// (symlinked src/), built against a published Vaadin release via the
+// com.vaadin platform plugin, with the Flow BOM (com.vaadin:flow) imported
+// at the Flow version that ships in that platform release (derived, not
+// assumed equal to the Vaadin version).
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.0.5'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.vaadin'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2.4')
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    implementation "com.vaadin:flow:${flowVersion}"
+    implementation "com.vaadin:vaadin-spring:${flowVersion}"
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "com.vaadin:flow:${flowVersion}"
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withJavadocJar()
+    withSourcesJar()
+}
+
+// Spring Boot recommends disabling the plain jar to avoid shipping two
+// archives. See https://docs.spring.io/spring-boot/docs/current/gradle-plugin/reference/htmlsingle/#packaging-executable.and-plain-archives
+tasks.named('jar') {
+    enabled = false
+}
+
+// No project version is set, so drop the "-unspecified" suffix Gradle
+// would otherwise append to every archive filename.
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}
+
+// Fixture sources carry no Javadoc comments on purpose; silence the
+// doclint "missing comment" warnings so the withJavadocJar() build is clean.
+tasks.withType(Javadoc).configureEach {
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

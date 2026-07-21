@@ -3,9 +3,19 @@
 # test project and collect per-project PASS/FAIL into a final summary.
 #
 # Usage:
-#   run-suite.sh [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <flow-version>
+#   run-suite.sh [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <version>
+#   run-suite.sh --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <version>
+#
+# The trailing <version> is a Flow version in source mode, or a Vaadin
+# platform version with --vaadin-platform. See run-project.sh.
 #
 # Options:
+#   --vaadin-platform    Published mode: run each project's platform/
+#                        counterpart, treating <version> as a Vaadin
+#                        platform version (25+). The Flow version is
+#                        derived per project.
+#   --flow-version=<v>   Published mode only: override the derived Flow
+#                        version with <v>.
 #   --cache=cold         Default. Run each project with --cache=cold, i.e.
 #                        wipe the shared Gradle build cache and run
 #                        scenarios A/B/C/D. Each project's cold run is
@@ -57,6 +67,8 @@ ALL_PROJECTS=(
 CACHE_MODE=cold
 FAIL_FAST=0
 SELECTED=()
+PLATFORM_MODE=0
+FLOW_OVERRIDE=""
 
 # Validate and assign a --cache value (cold or warm).
 set_cache_mode() {
@@ -83,6 +95,22 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       set_cache_mode "$2"
+      shift 2
+      ;;
+    --vaadin-platform)
+      PLATFORM_MODE=1
+      shift
+      ;;
+    --flow-version=*)
+      FLOW_OVERRIDE="${1#--flow-version=}"
+      shift
+      ;;
+    --flow-version)
+      if [[ $# -lt 2 ]]; then
+        echo "run-suite: --flow-version requires a value" >&2
+        exit 2
+      fi
+      FLOW_OVERRIDE="$2"
       shift 2
       ;;
     --fail-fast)
@@ -121,12 +149,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Both modes take exactly one <version>; --vaadin-platform only changes how
+# run-project.sh interprets it.
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 [--cache=cold|warm] [--fail-fast] [--projects=\"p1 p2 ...\"] <flow-version>" >&2
+  echo "usage: $0 [--cache=cold|warm] [--fail-fast] [--projects=\"p1 p2 ...\"] <version>" >&2
+  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--projects=\"p1 p2 ...\"] <version>" >&2
   exit 2
 fi
+version=$1
 
-flow_version=$1
+if [[ "$PLATFORM_MODE" -eq 0 && -n "$FLOW_OVERRIDE" ]]; then
+  echo "run-suite: --flow-version is only valid with --vaadin-platform" >&2
+  exit 2
+fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 runner="${script_dir}/run-project.sh"
@@ -155,7 +190,12 @@ else
   projects=("${ALL_PROJECTS[@]}")
 fi
 
-echo "${C_BOLD}${C_CYAN}Running suite: cache=${CACHE_MODE}, flow=${flow_version}, projects=${#projects[@]}${C_RESET}"
+if [[ "$PLATFORM_MODE" -eq 1 ]]; then
+  version_label="vaadin-platform=${version}${FLOW_OVERRIDE:+, flow=${FLOW_OVERRIDE}}"
+else
+  version_label="flow=${version}"
+fi
+echo "${C_BOLD}${C_CYAN}Running suite: cache=${CACHE_MODE}, ${version_label}, projects=${#projects[@]}${C_RESET}"
 echo "${C_DIM}${projects[*]}${C_RESET}"
 
 statuses=()   # parallel to `projects`: PASS or FAIL
@@ -168,10 +208,21 @@ for project in "${projects[@]}"; do
   printf '%s########################################################%s\n\n' "${C_BOLD}${C_CYAN}" "$C_RESET"
 
   start=$SECONDS
+  # Assemble the per-project invocation. In published mode, forward
+  # --vaadin-platform (and --flow-version if an override was given); the
+  # trailing <version> is passed through unchanged in both modes.
+  runner_args=("--cache=${CACHE_MODE}")
+  if [[ "$PLATFORM_MODE" -eq 1 ]]; then
+    runner_args+=("--vaadin-platform")
+    if [[ -n "$FLOW_OVERRIDE" ]]; then
+      runner_args+=("--flow-version=${FLOW_OVERRIDE}")
+    fi
+  fi
+  runner_args+=("$project" "$version")
   # Run directly (not in a pipe) so run-project.sh's own tty/colour
   # detection and live output are preserved. Guard with if/else so a
   # failure does not trip our own set -e — we want to keep going.
-  if bash "$runner" "--cache=${CACHE_MODE}" "$project" "$flow_version"; then
+  if bash "$runner" "${runner_args[@]}"; then
     statuses+=("PASS")
   else
     statuses+=("FAIL")

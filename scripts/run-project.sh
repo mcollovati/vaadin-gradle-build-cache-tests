@@ -2,9 +2,27 @@
 # Run build-cache scenarios for one of the test projects.
 #
 # Usage:
-#   run-project.sh [--cache=cold|warm] <project-dir-name> <flow-version>
+#   run-project.sh [--cache=cold|warm] <project-dir-name> <version>
+#   run-project.sh --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] <project-dir-name> <version>
+#
+# The trailing <version> is interpreted per mode:
+#   * Source mode (default): <version> is a Flow version. Builds the
+#     project under <project-dir-name>/ against a locally-installed Flow,
+#     applying the com.vaadin.flow plugin at that version.
+#   * Published mode (--vaadin-platform): <version> is a Vaadin *platform*
+#     version (25+). Builds the mirrored project under
+#     platform/<project-dir-name>/ against published Vaadin artifacts,
+#     applying the com.vaadin platform plugin at that version and
+#     resolving com.vaadin:flow from Maven Central / the Vaadin
+#     pre-releases repo. The Flow version is derived from the platform
+#     version (scripts/resolve-flow-version.sh) unless --flow-version
+#     overrides it.
 #
 # Options:
+#   --vaadin-platform    Enable published mode: treat <version> as a Vaadin
+#                        platform version (see above).
+#   --flow-version=<v>   Published mode only: override the derived Flow
+#                        version with <v>.
 #   --cache=cold         Wipe the local Gradle build cache
 #                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
 #                        to ~/.gradle/caches/build-cache-1) before running,
@@ -97,6 +115,8 @@ flush_cleanups() {
 trap flush_cleanups EXIT
 
 CACHE_MODE=warm
+PLATFORM_MODE=0
+FLOW_OVERRIDE=""
 
 # Validate and assign a --cache value (cold or warm).
 set_cache_mode() {
@@ -125,6 +145,22 @@ while [[ $# -gt 0 ]]; do
       set_cache_mode "$2"
       shift 2
       ;;
+    --vaadin-platform)
+      PLATFORM_MODE=1
+      shift
+      ;;
+    --flow-version=*)
+      FLOW_OVERRIDE="${1#--flow-version=}"
+      shift
+      ;;
+    --flow-version)
+      if [[ $# -lt 2 ]]; then
+        echo "run-project: --flow-version requires a value" >&2
+        exit 2
+      fi
+      FLOW_OVERRIDE="$2"
+      shift 2
+      ;;
     --help|-h)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -143,20 +179,48 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 [--cache=cold|warm] <project-dir-name> <flow-version>" >&2
-  exit 2
-fi
-
-project=$1
-flow_version=$2
-
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 script_dir="${repo_root}/scripts"
-project_dir="${repo_root}/${project}"
+
+usage() {
+  echo "usage: $0 [--cache=cold|warm] <project-dir-name> <version>" >&2
+  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] <project-dir-name> <version>" >&2
+}
+
+# Both modes take exactly <project> <version>; --vaadin-platform only
+# changes how <version> is interpreted (Vaadin platform vs Flow).
+if [[ $# -ne 2 ]]; then
+  usage
+  exit 2
+fi
+project=$1
+version=$2
+
+if [[ "$PLATFORM_MODE" -eq 1 ]]; then
+  # <version> is a Vaadin platform version; the mirrored project lives
+  # under platform/. Derive the Flow version unless --flow-version
+  # overrides it.
+  vaadin_version=$version
+  if [[ -n "$FLOW_OVERRIDE" ]]; then
+    flow_version=$FLOW_OVERRIDE
+    echo "Vaadin ${vaadin_version} with Flow ${flow_version} (override)"
+  else
+    echo "Resolving Flow version for Vaadin ${vaadin_version}..."
+    flow_version=$(bash "${script_dir}/resolve-flow-version.sh" "$vaadin_version")
+    echo "Vaadin ${vaadin_version} -> Flow ${flow_version}"
+  fi
+  project_dir="${repo_root}/platform/${project}"
+else
+  if [[ -n "$FLOW_OVERRIDE" ]]; then
+    echo "run-project: --flow-version is only valid with --vaadin-platform" >&2
+    exit 2
+  fi
+  flow_version=$version
+  project_dir="${repo_root}/${project}"
+fi
 
 if [[ ! -d "$project_dir" ]]; then
-  echo "run-project: unknown project '${project}'" >&2
+  echo "run-project: unknown project '${project}' (looked in ${project_dir})" >&2
   exit 2
 fi
 
@@ -234,6 +298,10 @@ GRADLE_ARGS=(
   "-Pvaadin.productionMode"
   "-PflowVersion=${flow_version}"
 )
+# Published mode also drives the com.vaadin platform plugin version.
+if [[ "$PLATFORM_MODE" -eq 1 ]]; then
+  GRADLE_ARGS+=("-PvaadinVersion=${vaadin_version}")
+fi
 
 # Prefer the project's Gradle wrapper if present so the suite works
 # without a system Gradle install. Fall back to system `gradle`.

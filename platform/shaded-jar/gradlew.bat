@@ -1,0 +1,1 @@
+../../shaded-jar/gradlew.bat

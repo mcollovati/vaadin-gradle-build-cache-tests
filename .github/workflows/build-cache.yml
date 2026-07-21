@@ -1,29 +1,36 @@
 name: Gradle build-cache validation
-run-name: "Gradle build-cache validation - ${{ github.event.inputs.flow_repo || 'vaadin/flow' }}@${{ github.event.inputs.flow_ref || 'main' }}"
+run-name: "Gradle build-cache validation - ${{ github.event.inputs.flow_version != '' && format('published Flow {0}', github.event.inputs.flow_version) || format('{0}@{1}', github.event.inputs.flow_repo || 'vaadin/flow', github.event.inputs.flow_ref || 'main') }}"
 
 on:
   workflow_dispatch:
     inputs:
       flow_repo:
-        description: "Owner/name of the Flow repository to test against"
+        description: "Owner/name of the Flow repository to build (ignored when flow_version is set)"
         required: true
         default: "vaadin/flow"
       flow_ref:
-        description: "Git ref on the Flow repo (branch, tag, or SHA)"
+        description: "Git ref on the Flow repo — branch, tag, or SHA (ignored when flow_version is set)"
         required: true
         default: "main"
+      flow_version:
+        description: "Published Flow version to test instead of building from source. When set, skips the build and resolves Flow from Maven Central / vaadin-prereleases."
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-cache-${{ github.event.inputs.flow_repo || 'vaadin/flow' }}-${{ github.event.inputs.flow_ref || 'main' }}
+  group: build-cache-${{ github.event.inputs.flow_version != '' && format('published-{0}', github.event.inputs.flow_version) || format('{0}-{1}', github.event.inputs.flow_repo || 'vaadin/flow', github.event.inputs.flow_ref || 'main') }}
   cancel-in-progress: false
 
 jobs:
   build-flow:
     name: Build Flow plugin
     runs-on: ubuntu-latest
+    # Skipped entirely when a published flow_version is requested — the
+    # scenario jobs then resolve Flow from Maven Central / vaadin-prereleases.
+    if: ${{ github.event.inputs.flow_version == '' }}
     outputs:
       flow-sha: ${{ steps.flow-sha.outputs.sha }}
       flow-version: ${{ steps.flow-version.outputs.version }}
@@ -114,6 +121,9 @@ jobs:
     name: cold / ${{ matrix.project }}
     runs-on: ubuntu-latest
     needs: build-flow
+    # Run after a successful build, or directly when a published
+    # flow_version was given (build-flow is then skipped).
+    if: ${{ !cancelled() && (needs.build-flow.result == 'success' || github.event.inputs.flow_version != '') }}
     strategy:
       fail-fast: false
       matrix:
@@ -146,12 +156,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # Only needed when building Flow from source; a published flow_version
+      # is resolved directly from Central / vaadin-prereleases by Gradle.
       - name: Download Flow Maven artifacts
+        if: ${{ github.event.inputs.flow_version == '' }}
         uses: actions/download-artifact@v4
         with:
           name: flow-m2
 
       - name: Restore Flow artifacts into mavenLocal
+        if: ${{ github.event.inputs.flow_version == '' }}
         run: |
           mkdir -p "$HOME/.m2/repository"
           tar -C "$HOME/.m2/repository" -xzf flow-m2.tgz
@@ -163,23 +177,25 @@ jobs:
       # The script's --cache=cold wipes ~/.gradle/caches/build-cache-1
       # before running, so Scenario A-1 always sees a cold cache even
       # on workflow reruns where setup-gradle@v4 restored a wrapper /
-      # dependency cache.
+      # dependency cache. FLOW_VERSION is the published input when given,
+      # else the version resolved by build-flow.
       - name: Run cold scenarios
         env:
-          FLOW_VERSION: ${{ needs.build-flow.outputs.flow-version }}
+          FLOW_VERSION: ${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-version }}
         run: bash scripts/run-project.sh --cache=cold "${{ matrix.project }}" "${FLOW_VERSION}"
 
       # Persist the populated local build-cache under a run-scoped key so
-      # the matching warm job can restore it on a fresh runner. The key
-      # is unique per (run_id, run_attempt) — Actions cache writes are
-      # write-once, and including run_attempt lets "Re-run all jobs"
-      # write a fresh cache rather than no-op against the prior attempt.
+      # the matching warm job can restore it on a fresh runner. The key is
+      # unique per (run_id, run_attempt) — Actions cache writes are
+      # write-once, and including run_attempt lets "Re-run all jobs" write a
+      # fresh cache rather than no-op against the prior attempt. The Flow
+      # discriminator is the built SHA, or the published version.
       - name: Save Gradle local build-cache
         if: success()
         uses: actions/cache/save@v4
         with:
           path: ~/.gradle/caches/build-cache-1
-          key: gradle-build-cache-${{ matrix.project }}-${{ needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload gradle logs on failure
         if: failure()
@@ -193,14 +209,15 @@ jobs:
     name: warm / ${{ matrix.project }}
     runs-on: ubuntu-latest
     needs: [build-flow, scenarios-cold]
-    # Run as long as build-flow succeeded, even when some cold matrix
-    # entries failed. The matching warm entries whose cold counterpart
-    # failed will fail visibly at "Restore Gradle local build-cache"
-    # (the cold "Save Gradle local build-cache" step is gated on
-    # success, so no cache is written for failed cold runs, and the
-    # warm restore here has fail-on-cache-miss: true). That's a more
-    # useful signal than skipping the entire warm matrix.
-    if: ${{ !cancelled() && needs.build-flow.result == 'success' }}
+    # Run as long as build-flow succeeded (or a published flow_version was
+    # given, so build-flow is skipped), even when some cold matrix entries
+    # failed. The matching warm entries whose cold counterpart failed will
+    # fail visibly at "Restore Gradle local build-cache" (the cold "Save
+    # Gradle local build-cache" step is gated on success, so no cache is
+    # written for failed cold runs, and the warm restore here has
+    # fail-on-cache-miss: true). That's a more useful signal than skipping
+    # the entire warm matrix.
+    if: ${{ !cancelled() && (needs.build-flow.result == 'success' || github.event.inputs.flow_version != '') }}
     strategy:
       fail-fast: false
       matrix:
@@ -238,15 +255,19 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.gradle/caches/build-cache-1
-          key: gradle-build-cache-${{ matrix.project }}-${{ needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           fail-on-cache-miss: true
 
+      # Only needed when building Flow from source; a published flow_version
+      # is resolved directly from Central / vaadin-prereleases by Gradle.
       - name: Download Flow Maven artifacts
+        if: ${{ github.event.inputs.flow_version == '' }}
         uses: actions/download-artifact@v4
         with:
           name: flow-m2
 
       - name: Restore Flow artifacts into mavenLocal
+        if: ${{ github.event.inputs.flow_version == '' }}
         run: |
           mkdir -p "$HOME/.m2/repository"
           tar -C "$HOME/.m2/repository" -xzf flow-m2.tgz
@@ -257,7 +278,7 @@ jobs:
 
       - name: Run warm-cache assertion
         env:
-          FLOW_VERSION: ${{ needs.build-flow.outputs.flow-version }}
+          FLOW_VERSION: ${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-version }}
         run: bash scripts/run-project.sh --cache=warm "${{ matrix.project }}" "${FLOW_VERSION}"
 
       - name: Upload gradle logs on failure

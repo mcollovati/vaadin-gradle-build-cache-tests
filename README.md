@@ -136,6 +136,43 @@ for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-fronten
 done
 ```
 
+### Testing against published Vaadin artifacts
+
+The projects above build against a locally-installed Flow snapshot. To
+instead validate a **published** Vaadin release (from Maven Central or
+the Vaadin pre-releases repo), each project has a mirror under
+`platform/` that applies the Vaadin *platform* plugin (`id 'com.vaadin'`,
+versioned by the Vaadin platform version) and resolves `com.vaadin:flow`
+from the published repositories. The `platform/<project>` mirrors share
+the same fixture sources as their root counterparts via a symlinked
+`src/`, so the scenarios are identical — only the plugin and where
+artifacts come from differ. This path requires **Vaadin 25+**.
+
+The Vaadin platform version and the Flow version are **not** aligned at
+the patch level (e.g. Vaadin `25.2.3` ships Flow `25.2.4`), so pass the
+**Vaadin** version and let the Flow version be derived from it (via
+`scripts/resolve-flow-version.sh`, which reads `<flow.version>` from the
+`com.vaadin:vaadin-gradle-plugin` POM):
+
+```bash
+# One project, published mode. The trailing version is a Vaadin platform
+# version; the Flow version is derived from it. Final/beta/rc resolve from
+# Maven Central, alpha/SNAPSHOT from vaadin-prereleases.
+bash scripts/run-project.sh --cache=cold --vaadin-platform plain-jar 25.2.3
+
+# Override the derived Flow version.
+bash scripts/run-project.sh --cache=cold --vaadin-platform --flow-version=25.2.4 plain-jar 25.2.3
+
+# The whole suite against a published version.
+bash scripts/run-suite.sh --vaadin-platform 25.2.3
+```
+
+Because the `platform/<project>/src` symlink is shared with the
+corresponding root project, don't run a project's source-mode and
+published-mode suites **concurrently** on the same machine — the
+frontend build writes into the shared source tree. Sequential runs and
+CI (isolated runners) are unaffected.
+
 ### Wiping the build cache
 
 The local Gradle build cache lives at
@@ -161,18 +198,26 @@ is triggered manually via `workflow_dispatch`, with inputs:
 
 - `flow_repo` (default `vaadin/flow`) — Flow repo (supports forks).
 - `flow_ref` (default `main`) — branch, tag, or SHA.
+- `flow_version` (optional) — a **published** Flow version. When set,
+  `build-flow` is skipped entirely and the scenario jobs resolve Flow
+  directly from Maven Central / vaadin-prereleases (no local build,
+  no `flow-m2` artifact). `flow_repo`/`flow_ref` are then ignored. This
+  is the source-mode (`com.vaadin.flow` plugin) counterpart to the
+  platform-mode published workflow below.
 
 The workflow has three job groups:
 
 1. **`build-flow`** — checks out the requested Flow ref and installs
    the Gradle plugin to `~/.m2/repository`, then uploads those
-   artifacts.
-2. **`scenarios-cold`** — matrix over all 5 projects. Each job
-   downloads the Flow artifacts, runs
-   `scripts/run-project.sh --cache=cold`, and persists the resulting
+   artifacts. Skipped when `flow_version` is set.
+2. **`scenarios-cold`** — matrix over all 6 projects. When building
+   from source, each job downloads the Flow artifacts into mavenLocal;
+   with `flow_version` set it skips that and lets Gradle resolve the
+   published Flow. Each job runs
+   `scripts/run-project.sh --cache=cold` and persists the resulting
    `~/.gradle/caches/build-cache-1` under a run-scoped Actions cache
-   key.
-3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 5
+   key (discriminated by the built Flow SHA, or the published version).
+3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 6
    projects. Each job restores the matching cold job's cache on a
    fresh runner and runs `scripts/run-project.sh --cache=warm`. A
    cache miss is a hard failure (`fail-on-cache-miss: true`) because
@@ -180,6 +225,22 @@ The workflow has three job groups:
 
 Failed runs upload `cold-<project>-logs` / `warm-<project>-logs`
 artifacts containing the Gradle logs.
+
+### Published-artifact workflow
+
+`.github/workflows/build-cache-published.yml` runs the same cold/warm
+matrix against a **published** Vaadin release instead of a locally-built
+Flow. It is `workflow_dispatch` only, with inputs:
+
+- `vaadin_version` (required) — the Vaadin platform version (25+).
+- `flow_version` (optional) — override the derived Flow version.
+
+It has no `build-flow` job. Instead a **`resolve-version`** job derives
+the Flow version from the Vaadin version (unless overridden), then the
+`scenarios-cold` and `scenarios-warm` matrices build the `platform/`
+projects, keying the persisted build-cache on the Vaadin and Flow
+versions. Final/beta/rc versions resolve from Maven Central; alpha and
+SNAPSHOT versions from the Vaadin pre-releases repo.
 
 ### Validating a Flow PR
 
@@ -193,15 +254,25 @@ the workflow is not exercising what we think it is.
 ```
 .
 ├── README.md                          # this file
-├── .github/workflows/build-cache.yml
+├── .github/workflows/
+│   ├── build-cache.yml                # source mode (builds Flow from a ref)
+│   └── build-cache-published.yml      # published mode (Central / pre-releases)
 ├── scripts/
 │   ├── run-suite.sh
 │   ├── run-project.sh
+│   ├── resolve-flow-version.sh        # Vaadin version -> Flow version
 │   └── assert-task-outcome.sh
-├── plain-jar/
+├── plain-jar/                         # source-mode projects (com.vaadin.flow)
 ├── war/
 ├── spring-boot-jar/
 ├── shaded-jar/
 ├── custom-jar-task/
-└── custom-frontend-output/
+├── custom-frontend-output/
+└── platform/                          # published-mode mirrors (com.vaadin)
+    ├── plain-jar/                     #   build.gradle + settings.gradle,
+    ├── war/                           #   with src/ and the wrapper symlinked
+    ├── spring-boot-jar/               #   back to the root project
+    ├── shaded-jar/
+    ├── custom-jar-task/
+    └── custom-frontend-output/
 ```

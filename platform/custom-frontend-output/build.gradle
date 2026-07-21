@@ -1,0 +1,64 @@
+// Published-artifact counterpart of ../../custom-frontend-output. See
+// ../plain-jar/build.gradle for the rationale: same fixture sources
+// (symlinked src/), built against a published Vaadin release via the
+// com.vaadin platform plugin, with com.vaadin:flow resolved from Central /
+// vaadin-prereleases at the Flow version that ships in that platform
+// release (derived, not assumed equal).
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.vaadin'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2.4')
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    implementation "com.vaadin:flow:${flowVersion}"
+    implementation 'org.slf4j:slf4j-simple:2.0.3'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withJavadocJar()
+    withSourcesJar()
+}
+
+application {
+    mainClass = 'com.example.Application'
+}
+
+vaadin {
+    // Override the default frontendOutputDirectory
+    // (build/vaadin-build-frontend/META-INF/VAADIN/webapp) to validate
+    // that the Flow Gradle plugin's caching and jar-packaging logic
+    // honour a custom path. The trailing META-INF/VAADIN/webapp
+    // segments are required: FlowPlugin walks parentFile.parentFile
+    // from this directory to find the Jar source root.
+    frontendOutputDirectory = file("build/custom-frontend-output/META-INF/VAADIN/webapp")
+}
+
+// No project version is set, so drop the "-unspecified" suffix Gradle
+// would otherwise append to every archive filename.
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}
+
+// Fixture sources carry no Javadoc comments on purpose; silence the
+// doclint "missing comment" warnings so the withJavadocJar() build is clean.
+tasks.withType(Javadoc).configureEach {
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
