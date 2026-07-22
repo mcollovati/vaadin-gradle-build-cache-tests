@@ -84,7 +84,9 @@ it re-executes while `compileJava` and friends hit the cache — i.e. its
 cache key is path-dependent. R is a hard guard that will pass once the
 plugin makes that key relocatable; until then it is left disabled so it
 doesn't mask the other scenarios. It is a pending investigation, not an
-accepted behaviour.
+accepted behaviour. To see *which* inputs make the key path-dependent,
+re-run with `--cache-debug` and diff the key breakdown (see
+[Debugging the cache key](#debugging-the-cache-key)).
 
 In **warm** cache mode (the default) the suite skips the cold scenarios
 and instead
@@ -219,6 +221,38 @@ To bypass the cache for a single Gradle invocation without deleting it,
 add `--no-build-cache` to the command line. Note that the rm form
 affects every Gradle project on the machine sharing the same
 `GRADLE_USER_HOME`, so be deliberate.
+
+### Debugging the cache key
+
+When a scenario misses the cache and you need to know *why*, pass
+`--cache-debug` (or set `CACHE_DEBUG=1`). It adds
+`-Dorg.gradle.caching.debug=true` to every Gradle invocation, so each
+cacheable task logs the individual inputs hashed into its build-cache
+key (`Appending … to build cache key` lines) followed by the final key.
+Diffing those lines between two builds pinpoints which input changed.
+
+```bash
+# Cold suite + scenario R with the key breakdown logged.
+bash scripts/run-project.sh --cache=cold --relocatability --cache-debug plain-jar "$FLOW_VERSION"
+
+# Extract the :vaadinBuildFrontend block from the original build and the
+# relocated build, then diff (each log lives in the project dir):
+cd plain-jar
+extract() {
+  awk '/^Appending /{b[n++]=$0;next}
+       /^Build cache key for task/{if($0~/:vaadinBuildFrontend'\''/){for(i=0;i<n;i++)print b[i];print}n=0;delete b;next}
+       {n=0;delete b}' "$1"
+}
+diff <(extract scenario-a-1.log) <(extract scenario-r.log)
+```
+
+For scenario R this shows the miss comes from six `@Input` **value**
+properties on `VaadinBuildFrontendTask` that hold absolute directory
+paths hashed verbatim (`frontendDirectory`, `frontendOutputDirectory`,
+`javaSourceFolder`, `javaResourceFolder`, `npmFolder`,
+`resourcesOutputDirectory`) — while the genuine content inputs
+(`applicationProperties` as `IGNORED_PATH`, `projectClassesDirs` as
+`CLASSPATH`) keep an identical fingerprint across paths.
 
 ## CI workflow
 
