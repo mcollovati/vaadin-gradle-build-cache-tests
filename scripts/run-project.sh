@@ -318,7 +318,13 @@ case "$project" in
   spring-boot-jar)
     BUILD_TASK="bootJar"
     ARCHIVE_GLOB="build/libs/spring-boot-jar.jar"
-    BUNDLE_PREFIX="BOOT-INF/classes/"
+    # Bundle prefix is "" (archive root), NOT "BOOT-INF/classes/". Since
+    # Flow PR #25001 (25.3.0-alpha4) vaadinBuildFrontend writes to a
+    # separate build/vaadin-build-frontend dir, and the bootJar packaging
+    # stages that output at the archive root (META-INF/VAADIN/...) rather
+    # than under BOOT-INF/classes/. See vaadin/flow#25021. Only empty
+    # BOOT-INF/classes/META-INF/VAADIN/ dir placeholders remain there.
+    BUNDLE_PREFIX=""
     SOURCES_JAR="build/libs/spring-boot-jar-sources.jar"
     JAVADOC_JAR="build/libs/spring-boot-jar-javadoc.jar"
     ;;

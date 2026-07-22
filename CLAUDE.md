@@ -277,8 +277,10 @@ what we think.
 2. Add a `case` branch in `scripts/run-project.sh` setting
    `BUILD_TASK`, `ARCHIVE_GLOB`, and `BUNDLE_PREFIX`. `BUNDLE_PREFIX`
    is the prefix inside the archive where the Flow plugin stages the
-   bundle (`""` for jars, `WEB-INF/classes/` for wars,
-   `BOOT-INF/classes/` for Spring Boot).
+   bundle (`""` for jars, `WEB-INF/classes/` for wars). Spring Boot
+   `bootJar` also uses `""`: since Flow PR #25001 (25.3.0-alpha4) the
+   bundle is staged at the archive **root** (`META-INF/VAADIN/...`), not
+   under `BOOT-INF/classes/` — see vaadin/flow#25021.
 3. Add `new-project` to both matrix lists in
    `.github/workflows/build-cache.yml` (cold and warm), and to the
    `ALL_PROJECTS` array in `scripts/run-suite.sh`.
