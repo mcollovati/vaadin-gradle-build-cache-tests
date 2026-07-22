@@ -467,8 +467,17 @@ assert_outcome() {
 BASELINE_SIG=""
 
 bundle_signature() {
-  local archive=$1 prefix=$2
-  unzip -p "$archive" "${prefix}META-INF/VAADIN/config/stats.json" 2>/dev/null \
+  local archive=$1 prefix=$2 raw
+  # Guard unzip: it exits 11 ("no matching files") when stats.json is
+  # absent. Under `set -euo pipefail` an unguarded unzip in this
+  # command substitution propagates that 11 straight through the
+  # caller's `X=$(bundle_signature ...)` assignment — killing the script
+  # with a bare exit code, past both the ERR trap and any FAIL branch.
+  # `|| raw=""` turns "absent" into an empty signature so callers detect
+  # it explicitly (see capture_baseline_signature / assert_signature_*).
+  raw=$(unzip -p "$archive" "${prefix}META-INF/VAADIN/config/stats.json" 2>/dev/null) || raw=""
+  [[ -z "$raw" ]] && return 0
+  printf '%s' "$raw" \
     | tr -d ' \t\n\r' \
     | sed -E 's/,?"pre-compiled":(true|false)//g; s/,\}/}/g' \
     | sha256sum | cut -d' ' -f1
@@ -477,8 +486,10 @@ bundle_signature() {
 capture_baseline_signature() {
   BASELINE_SIG=$(bundle_signature "$1" "$2")
   if [[ -z "$BASELINE_SIG" ]]; then
-    printf '%sFAIL%s could not read stats.json from %s to capture baseline signature\n' \
-      "$C_RED$C_BOLD" "$C_RESET" "$1" >&2
+    printf '%sFAIL%s could not read %sMETA-INF/VAADIN/config/stats.json from %s to capture baseline signature\n' \
+      "$C_RED$C_BOLD" "$C_RESET" "$2" "$1" >&2
+    printf '       archive VAADIN staging actually present:\n' >&2
+    unzip -l "$1" | grep -F "META-INF/VAADIN" >&2 || printf '       (none)\n' >&2
     return 1
   fi
   printf '%sOK  %s baseline bundle signature %s captured\n' \
