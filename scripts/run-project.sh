@@ -29,6 +29,14 @@
 #                        come FROM-CACHE). OFF by default: the current
 #                        plugin's key is path-dependent, so R fails until
 #                        that is fixed. Also enabled via RUN_RELOCATABILITY=1.
+#   --cache-debug        Pass -Dorg.gradle.caching.debug=true to every Gradle
+#                        invocation, so each cacheable task logs the
+#                        individual inputs hashed into its build-cache key
+#                        ("Appending ... to build cache key" lines) and the
+#                        final key. Diffing those lines between two builds
+#                        pinpoints which input changed — e.g. why scenario R
+#                        misses the cache at a new path. Also enabled via
+#                        CACHE_DEBUG=1.
 #   --cache=cold         Wipe the local Gradle build cache
 #                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
 #                        to ~/.gradle/caches/build-cache-1) before running,
@@ -176,6 +184,10 @@ FLOW_OVERRIDE=""
 # R fails until that is fixed. Enable it with --relocatability (or
 # RUN_RELOCATABILITY=1) to investigate / validate a relocatable fix.
 RUN_RELOC=${RUN_RELOCATABILITY:-0}
+# When set, add -Dorg.gradle.caching.debug=true so Gradle logs every input
+# hashed into each task's build-cache key. Enable with --cache-debug or
+# CACHE_DEBUG=1.
+CACHE_DEBUG=${CACHE_DEBUG:-0}
 
 # Validate and assign a --cache value (cold or warm).
 set_cache_mode() {
@@ -212,6 +224,10 @@ while [[ $# -gt 0 ]]; do
       RUN_RELOC=1
       shift
       ;;
+    --cache-debug)
+      CACHE_DEBUG=1
+      shift
+      ;;
     --flow-version=*)
       FLOW_OVERRIDE="${1#--flow-version=}"
       shift
@@ -246,8 +262,8 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 script_dir="${repo_root}/scripts"
 
 usage() {
-  echo "usage: $0 [--cache=cold|warm] [--relocatability] <project-dir-name> <version>" >&2
-  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--relocatability] <project-dir-name> <version>" >&2
+  echo "usage: $0 [--cache=cold|warm] [--relocatability] [--cache-debug] <project-dir-name> <version>" >&2
+  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--relocatability] [--cache-debug] <project-dir-name> <version>" >&2
 }
 
 # Both modes take exactly <project> <version>; --vaadin-platform only
@@ -370,6 +386,10 @@ GRADLE_ARGS=(
 # Published mode also drives the com.vaadin platform plugin version.
 if [[ "$PLATFORM_MODE" -eq 1 ]]; then
   GRADLE_ARGS+=("-PvaadinVersion=${vaadin_version}")
+fi
+# Log the individual inputs hashed into each task's build-cache key.
+if [[ "$CACHE_DEBUG" -eq 1 ]]; then
+  GRADLE_ARGS+=("-Dorg.gradle.caching.debug=true")
 fi
 
 # Prefer the project's Gradle wrapper if present so the suite works
