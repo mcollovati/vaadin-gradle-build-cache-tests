@@ -170,16 +170,30 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
 - **R**: Relocatability. **Opt-in, off by default** — enable with
   `--relocatability` (run-project.sh and run-suite.sh) or
   `RUN_RELOCATABILITY=1`. Copy the project to a fresh absolute path (via
-  `tar --dereference`, excluding `node_modules`/`build`/`.gradle`) and
-  build there against the **same** shared cache → FROM-CACHE. Guards
-  against absolute paths leaking into the cache key — the reason a
-  *shared* cache exists. `--dereference` resolves the platform mirrors'
-  top-level symlinks so the copy is a fully independent tree. Disabled by
-  default because on the current plugin `:vaadinBuildFrontend` re-executes
-  at a new path (every other task relocates, and same-path
+  `tar --dereference`, excluding `node_modules`/`build`/`.gradle` **and**
+  the generated frontend surface — the whole `src/main/frontend` tree,
+  `src/main/bundles`, `src/main/dev-bundle`) and build there against the
+  **same** shared cache → FROM-CACHE. Guards against absolute paths
+  leaking into the cache key — the reason a *shared* cache exists.
+  `--dereference` resolves the platform mirrors' top-level symlinks so the
+  copy is a fully independent tree. The generated-frontend excludes make
+  the copy match a fresh git checkout (all those paths are gitignored):
+  copying them in instead plants pre-existing task outputs at a checkout
+  with no `.gradle` history, which Gradle flags as `OVERLAPPING_OUTPUTS`
+  (on `src/main/frontend/index.html`) and marks `:vaadinBuildFrontend`
+  non-cacheable — a *false* failure that would mask the real bug. Disabled
+  by default because on the current plugin `:vaadinBuildFrontend`
+  re-executes at a new path (every other task relocates, and same-path
   `rm -rf build/` still restores FROM-CACHE), so its key is
-  path-dependent. R is a hard guard that flips green once the plugin fixes
-  that — a pending investigation, not an accepted behaviour.
+  path-dependent. Root cause pinned via `-Dorg.gradle.caching.debug` across
+  two pristine checkouts: six `@Input` **value** properties on
+  `VaadinBuildFrontendTask` hold absolute directory paths hashed verbatim
+  into the key (`frontendDirectory`, `frontendOutputDirectory`,
+  `javaSourceFolder`, `javaResourceFolder`, `npmFolder`,
+  `resourcesOutputDirectory`); the real content inputs relocate fine
+  (`IGNORED_PATH`/`CLASSPATH`/`RELATIVE_PATH`). R is a hard guard that
+  flips green once the plugin makes those path-insensitive — a pending
+  investigation, not an accepted behaviour.
 
 Cache-miss guards (NOT FROM-CACHE):
 

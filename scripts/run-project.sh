@@ -788,8 +788,20 @@ register_cleanup "rm -rf '$reloc_dir'"
 # symlinks that --dereference would choke on) and the stale build/.gradle
 # state, so the relocated build can only avoid re-execution via the
 # *shared* build cache.
+#
+# Also exclude the generated frontend surface (all gitignored: the whole
+# src/main/frontend tree, src/main/bundles, src/main/dev-bundle). A fresh
+# git checkout — what this scenario emulates — has none of these; the build
+# regenerates them. Copying them in instead produces pre-existing output
+# files at a checkout with no .gradle history, which Gradle flags as
+# OVERLAPPING_OUTPUTS ("does not know how file src/main/frontend/index.html
+# was created") and marks :vaadinBuildFrontend non-cacheable — a false
+# failure that masks the actual path-dependent-cache-key bug R exists to
+# catch. Dropping them lets R isolate that one bug.
 tar -cf - --dereference \
   --exclude=./node_modules --exclude=./build --exclude=./.gradle \
+  --exclude=./src/main/frontend --exclude=./src/main/bundles \
+  --exclude=./src/main/dev-bundle \
   -C . . | tar -xf - -C "$reloc_dir"
 chmod +x "$reloc_dir/gradlew" 2>/dev/null || true
 (
