@@ -267,6 +267,8 @@ is triggered manually via `workflow_dispatch`, with inputs:
   no `flow-m2` artifact). `flow_repo`/`flow_ref` are then ignored. This
   is the source-mode (`com.vaadin.flow` plugin) counterpart to the
   platform-mode published workflow below.
+- `relocatability` (checkbox, default off) — also run the opt-in
+  scenario R. See [Relocatability on demand](#relocatability-on-demand).
 
 The workflow has three job groups:
 
@@ -289,6 +291,27 @@ The workflow has three job groups:
 Failed runs upload `cold-<project>-logs` / `warm-<project>-logs`
 artifacts containing the Gradle logs.
 
+### Relocatability on demand
+
+Both workflows accept a `relocatability` checkbox input. When ticked,
+they add a fourth matrix job group, **`scenarios-relocatability`**, that
+runs `scripts/run-project.sh --cache=cold --relocatability --cache-debug`
+for every project — i.e. the full cold sequence (A–H) followed by
+scenario R, building each project at a fresh absolute path against the
+shared cache and requiring `:vaadinBuildFrontend == FROM-CACHE`.
+
+It is a **separate** job rather than a flag on `scenarios-cold` on
+purpose: scenario R is [known-failing](#scenarios) on the current plugin
+(its cache key embeds absolute paths), and inside the cold job that
+failure would skip the cache-save step and cascade a misleading
+cache-miss failure across the entire warm matrix. Isolated, R's expected
+red is a distinct signal and the cold/warm jobs are untouched — this job
+saves no cache and feeds nothing downstream. It runs with `--cache-debug`,
+so the failure-log artifacts (`relocatability-<project>-logs`) carry the
+build-cache key breakdown that pinpoints the path-dependent inputs (see
+[Debugging the cache key](#debugging-the-cache-key)). Flip R green by
+fixing the plugin, and this job goes green with no workflow change.
+
 ### Published-artifact workflow
 
 `.github/workflows/build-cache-published.yml` runs the same cold/warm
@@ -297,6 +320,9 @@ Flow. It is `workflow_dispatch` only, with inputs:
 
 - `vaadin_version` (required) — the Vaadin platform version (25+).
 - `flow_version` (optional) — override the derived Flow version.
+- `relocatability` (checkbox, default off) — also run the opt-in
+  scenario R as a separate job (see
+  [Relocatability on demand](#relocatability-on-demand)).
 
 It has no `build-flow` job. Instead a **`resolve-version`** job derives
 the Flow version from the Vaadin version (unless overridden), then the
