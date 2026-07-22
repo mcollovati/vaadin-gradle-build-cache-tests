@@ -1,0 +1,17 @@
+// Init script used only by scenario H (#7). It adds the pre-built
+// demo-addon fixture jar to every project's implementation classpath
+// without editing any project's build.gradle, so the scenario stays
+// uniform across all subprojects and both build modes.
+//
+// The absolute path to the jar is supplied via the -PdemoAddonJar
+// project property (set by scripts/run-project.sh).
+allprojects {
+    plugins.withId('java') {
+        def addonJar = providers.gradleProperty('demoAddonJar').getOrNull()
+        if (addonJar) {
+            dependencies {
+                add('implementation', files(addonJar))
+            }
+        }
+    }
+}

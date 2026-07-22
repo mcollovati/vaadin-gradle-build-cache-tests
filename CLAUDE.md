@@ -16,8 +16,9 @@ real assertions live in `scripts/`.
 ## Architecture in one paragraph
 
 `scripts/run-project.sh` drives one subproject through the same
-fixed scenario set (A/B/C/D in cold mode, single FROM-CACHE assertion
-in warm mode); `scripts/run-suite.sh` is a thin wrapper that runs
+fixed scenario set (A–H in cold mode, plus opt-in relocatability
+scenario R; single FROM-CACHE assertion in warm mode);
+`scripts/run-suite.sh` is a thin wrapper that runs
 `run-project.sh` over every subproject (canonical list in its
 `ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
 project-specific values (build task,
@@ -86,7 +87,7 @@ FLOW_VERSION=$(cd /path/to/flow && ./mvnw -q help:evaluate -Dexpression=project.
 Then:
 
 ```bash
-# Cold: wipes ~/.gradle/caches/build-cache-1, runs scenarios A/B/C/D.
+# Cold: wipes ~/.gradle/caches/build-cache-1, runs scenarios A–H + R.
 bash scripts/run-project.sh --cache=cold plain-jar "$FLOW_VERSION"
 
 # Warm (default): leaves cache alone, asserts clean build → FROM-CACHE.
@@ -112,10 +113,49 @@ statement at `scripts/run-project.sh:176`.
 ## Scenarios (cold mode)
 
 Each scenario is destructive but registers an undo via
-`register_cleanup` **before** the destructive step, so an aborted run
-still leaves a clean working tree (EXIT trap → `flush_cleanups`).
+`register_cleanup` **before** the destructive step. Cold-mode scenarios
+are wrapped by `scenario_begin`/`scenario_end`: `scenario_begin` records
+the cleanup-stack depth (and wipes `build/`), `scenario_end` flushes that
+scenario's cleanups immediately (LIFO), so edits never leak between
+scenarios — that is what lets D and F both edit `HelloView.java`. The
+EXIT trap → `flush_cleanups` is still the abort safety net.
+
+Every scenario also asserts the **produced bundle content**, not only
+the task outcome, via a signature over the archived
+`META-INF/VAADIN/config/stats.json` (which embeds `frontendHashes` +
+`packageJsonHash` + `bundleImports`). Scenario A captures the baseline
+(`capture_baseline_signature`); hits assert `assert_signature_same`,
+frontend-changing misses assert `assert_signature_differs` plus an
+`assert_bundle_file_contains` for the staged marker. This catches a false
+hit that serves a *stale* bundle — invisible to an outcome-only check.
+
+Two non-obvious details make the content check reliable (both learned the
+hard way — see `bundle_signature` and `scenario_begin`):
+
+- **Why stats.json, not the `.js` chunks.** The bundler tree-shakes an
+  unused module out of the compiled output, so an added `@JsModule`
+  (scenario F) can leave the webapp `.js` chunks byte-identical; only
+  stats.json's `bundleImports` records the new import. So the signature
+  hashes stats.json, not the produced bundle files.
+- **Normalization.** Flow writes stats.json pretty-printed when it
+  *compiles* the bundle but compact (with a `"pre-compiled":true` flag)
+  when it *reuses* the packaged `src/main/bundles/prod.bundle`.
+  `bundle_signature` strips all whitespace and drops that flag so
+  compile-vs-reuse formatting is not mistaken for a bundle change.
+- **`prod.bundle` clean.** `scenario_begin` deletes `src/main/bundles`
+  and `src/main/dev-bundle` before every scenario. Flow reuses an
+  existing compatible `prod.bundle`, so a bundle compiled by an earlier
+  scenario would be served unchanged even after a frontend edit — masking
+  F/G/H. A fresh CI checkout never has this file; removing it makes local
+  runs match CI. It is **not** a Gradle cache input, so FROM-CACHE
+  scenarios are unaffected (the task is restored from Gradle's cache, not
+  recompiled). Cold mode also clears `src/main/frontend/generated` once
+  before scenario A for a full reset.
+
+Cache-hit guards (FROM-CACHE, signature unchanged):
 
 - **A**: build → `rm -rf build/` → build. Expect SUCCESS then FROM-CACHE.
+  Captures the baseline bundle signature.
 - **B**: Add `src/test/java/com/example/AddedTest.java` → build. FROM-CACHE.
 - **C**: Append to `src/main/resources/messages.properties` → build. FROM-CACHE.
   - Uses `messages.properties` specifically because it is **not**
@@ -123,9 +163,43 @@ still leaves a clean working tree (EXIT trap → `flush_cleanups`).
     `application.properties` is declared as `@InputFile` with content
     sensitivity, so editing it correctly invalidates the cache and is
     not a useful negative case.
+- **E**: Append a comment **after the final `}`** of `HelloView.java` →
+  build. FROM-CACHE. The trailing comment shifts no code line numbers, so
+  javac emits byte-identical bytecode; guards against a key that keys on
+  source text/timestamps rather than normalized compiled output.
+- **R**: Relocatability. **Opt-in, off by default** — enable with
+  `--relocatability` (run-project.sh and run-suite.sh) or
+  `RUN_RELOCATABILITY=1`. Copy the project to a fresh absolute path (via
+  `tar --dereference`, excluding `node_modules`/`build`/`.gradle`) and
+  build there against the **same** shared cache → FROM-CACHE. Guards
+  against absolute paths leaking into the cache key — the reason a
+  *shared* cache exists. `--dereference` resolves the platform mirrors'
+  top-level symlinks so the copy is a fully independent tree. Disabled by
+  default because on the current plugin `:vaadinBuildFrontend` re-executes
+  at a new path (every other task relocates, and same-path
+  `rm -rf build/` still restores FROM-CACHE), so its key is
+  path-dependent. R is a hard guard that flips green once the plugin fixes
+  that — a pending investigation, not an accepted behaviour.
+
+Cache-miss guards (NOT FROM-CACHE):
+
 - **D**: Edit `HelloView.java` heading literal → build. NOT_FROM_CACHE
-  (negative assertion — guards against an over-eager cache key that
-  ignores main-classpath bytecode).
+  (guards against a key that ignores main-classpath bytecode). The
+  heading is server-side, so the bundle is unchanged → signature *same*.
+- **F**: Create `src/main/frontend/marker-widget.js` and add
+  `@JsModule("./marker-widget.js")` to the view → build. NOT_FROM_CACHE;
+  signature differs; `marker-widget` staged in stats.json.
+- **G**: Edit `src/main/frontend/index.html` (the app-shell template, a
+  declared frontend input) → build. NOT_FROM_CACHE; signature differs;
+  the marker reaches the built `webapp/index.html`.
+- **H**: Inject the `fixtures/demo-addon` jar via
+  `--init-script scripts/addon-init.gradle` (`-PdemoAddonJar=…`) → build.
+  NOT_FROM_CACHE; signature differs; `demo-addon-marker` staged. The
+  add-on ships a `@Route` view (Flow discovers routes classpath-wide)
+  whose `@JsModule` stages the module with **no** app source change, so
+  this isolates "a dependency's frontend is a cache input" from any
+  bytecode change. `run-project.sh` builds the fixture jar first
+  (`build_addon_jar`, incremental).
 
 ## CI workflow
 
@@ -180,7 +254,12 @@ what we think.
    Gradle wrapper, and the same `src/main/java/com/example/` layout
    (`Application.java`, `HelloView.java`, `PlainService.java`) and
    `src/main/resources/{application,messages}.properties` as the
-   existing subprojects — scenarios B/C/D edit those exact paths.
+   existing subprojects — scenarios B–G edit those exact paths
+   (`HelloView.java` for D/E/F, `messages.properties` for C,
+   `src/main/frontend/index.html` for G — the last is generated by the
+   first build, so nothing to commit). Scenarios H (shared
+   `fixtures/demo-addon` jar via init script) and R (relocatability, a
+   generic tree copy) need no per-project setup.
 2. Add a `case` branch in `scripts/run-project.sh` setting
    `BUILD_TASK`, `ARCHIVE_GLOB`, and `BUNDLE_PREFIX`. `BUNDLE_PREFIX`
    is the prefix inside the archive where the Flow plugin stages the

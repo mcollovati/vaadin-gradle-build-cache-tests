@@ -1,0 +1,35 @@
+// Minimal Vaadin add-on fixture used by scenario H (#7): a dependency
+// jar that carries a frontend resource (demo-addon-marker.js) exposed
+// through a @JsModule annotation. Injected into a project build via
+// scripts/addon-init.gradle so the Flow plugin's classpath scan stages
+// the module — a genuine cache-key input that lives in a dependency,
+// not in the project's own sources.
+plugins {
+    id 'java-library'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.3-SNAPSHOT')
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    // compileOnly: we only need the @JsModule annotation to compile; the
+    // consuming project already has Flow on its classpath.
+    compileOnly "com.vaadin:flow:${flowVersion}"
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+// Keep the archive name stable (no version suffix) so addon-init.gradle
+// can reference it by a fixed path.
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}

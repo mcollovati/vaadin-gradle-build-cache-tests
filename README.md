@@ -44,21 +44,50 @@ or javadoc HTML.
 
 ## Scenarios
 
-For each project, in **cold** cache mode the suite runs four scenarios
-in order:
+For each project, in **cold** cache mode the suite runs these scenarios
+in order. Every scenario also asserts the **produced bundle content**,
+not just the task outcome: cache hits must keep the scenario-A baseline
+`stats.json` signature, and frontend-changing misses must change it (and
+stage the expected module). That catches a false cache hit that serves a
+*stale* bundle — something an outcome-only check is blind to.
 
-| # | Scenario              | Expected `vaadinBuildFrontend` outcome |
-|---|-----------------------|----------------------------------------|
-| A | Cold-cache restore: build → `rm -rf build/` → build | `SUCCESS` then `FROM-CACHE` |
-| B | Add a test class then build with a clean output tree | `FROM-CACHE` |
-| C | Edit `src/main/resources/messages.properties` then build | `FROM-CACHE` |
-| D | Modify the `@Route` view's Java code then build      | not from cache (re-executes) |
+Cache-**hit** guards (must come `FROM-CACHE`, bundle unchanged):
 
-Scenario D is the negative assertion that proves the cache key is
-sensitive to main-classpath bytecode changes — useful as a guard
-against an over-eager future change that would weaken the cache key.
+| # | Scenario              | Why it must still hit |
+|---|-----------------------|-----------------------|
+| A | Cold-cache restore: build → `rm -rf build/` → build | `SUCCESS` then `FROM-CACHE` — populates the baseline |
+| B | Add a test class (not a `vaadinBuildFrontend` input) | test sources don't affect the bundle |
+| C | Edit `src/main/resources/messages.properties`       | not a declared input |
+| E | Append a comment after the final `}` of the view    | byte-identical bytecode → normalized key still hits |
+| R | Build a copy of the project at a **different absolute path** against the same shared cache | proves the cache key is relocatable, not path-bound — **opt-in, off by default** (see below) |
 
-In **warm** cache mode (the default) the suite skips A–D and instead
+Cache-**miss** guards (must **not** come `FROM-CACHE`):
+
+| # | Scenario              | Why it must miss |
+|---|-----------------------|------------------|
+| D | Modify the `@Route` view's Java code                | main-classpath bytecode is an input (bundle itself unchanged — heading is server-side) |
+| F | Add a `@JsModule` referencing a project frontend file | new frontend module changes the bundle |
+| G | Edit `src/main/frontend/index.html`                 | the app-shell template is a frontend input |
+| H | Add a dependency jar carrying a `@Route` view with a `@JsModule` (a frontend add-on) | a dependency's frontend is a cache input, staged without any app source change |
+
+Scenarios D–H are the negative/positive-invalidation guards; E, B, C and
+R guard against an over-eager key that rebuilds (or fails to relocate)
+when nothing bundle-relevant changed. The add-on jar for H is the
+buildable fixture in `fixtures/demo-addon/`, injected via
+`scripts/addon-init.gradle` (no project `build.gradle` edit).
+
+Scenario **R is opt-in and off by default** (pass `--relocatability`, or
+set `RUN_RELOCATABILITY=1`). On the plugin as of this writing every task
+relocates *except* `:vaadinBuildFrontend`: after `rm -rf build/` at the
+same path it restores `FROM-CACHE`, but built at a different absolute path
+it re-executes while `compileJava` and friends hit the cache — i.e. its
+cache key is path-dependent. R is a hard guard that will pass once the
+plugin makes that key relocatable; until then it is left disabled so it
+doesn't mask the other scenarios. It is a pending investigation, not an
+accepted behaviour.
+
+In **warm** cache mode (the default) the suite skips the cold scenarios
+and instead
 runs one `clean <build-task>` asserting `:vaadinBuildFrontend ==
 FROM-CACHE`. The warm path is what CI uses to validate that a cache
 written by a previous job (then persisted to and re-fetched from
@@ -99,7 +128,7 @@ unzip -l build/libs/plain-jar.jar | grep META-INF/VAADIN/webapp/
 Or run the scripted scenarios. The runner has two cache modes:
 
 ```bash
-# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A/B/C/D.
+# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A–H + R.
 bash scripts/run-project.sh --cache=cold plain-jar "$FLOW_VERSION"
 
 # Warm mode (default): leave the cache alone and assert that a
@@ -113,7 +142,7 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 prints a per-project PASS/FAIL summary (exit non-zero if any failed):
 
 ```bash
-# Run cold scenarios (A/B/C/D) for every project. This is the complete
+# Run the full cold scenario set (A–H + R) for every project. This is the complete
 # local validation — each project's cold run primes and hits its own
 # cache within scenario A, so no separate warm phase is needed locally.
 bash scripts/run-suite.sh "$FLOW_VERSION"
