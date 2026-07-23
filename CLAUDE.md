@@ -16,8 +16,8 @@ real assertions live in `scripts/`.
 ## Architecture in one paragraph
 
 `scripts/run-project.sh` drives one subproject through the same
-fixed scenario set (A–H in cold mode, plus opt-in relocatability
-scenario R; single FROM-CACHE assertion in warm mode);
+fixed scenario set (A–H plus relocatability scenario R in cold mode;
+single FROM-CACHE assertion in warm mode);
 `scripts/run-suite.sh` is a thin wrapper that runs
 `run-project.sh` over every subproject (canonical list in its
 `ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
@@ -167,33 +167,29 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
   build. FROM-CACHE. The trailing comment shifts no code line numbers, so
   javac emits byte-identical bytecode; guards against a key that keys on
   source text/timestamps rather than normalized compiled output.
-- **R**: Relocatability. **Opt-in, off by default** — enable with
-  `--relocatability` (run-project.sh and run-suite.sh) or
-  `RUN_RELOCATABILITY=1`. Copy the project to a fresh absolute path (via
-  `tar --dereference`, excluding `node_modules`/`build`/`.gradle` **and**
-  the generated frontend surface — the whole `src/main/frontend` tree,
-  `src/main/bundles`, `src/main/dev-bundle`) and build there against the
-  **same** shared cache → FROM-CACHE. Guards against absolute paths
-  leaking into the cache key — the reason a *shared* cache exists.
-  `--dereference` resolves the platform mirrors' top-level symlinks so the
-  copy is a fully independent tree. The generated-frontend excludes make
-  the copy match a fresh git checkout (all those paths are gitignored):
-  copying them in instead plants pre-existing task outputs at a checkout
-  with no `.gradle` history, which Gradle flags as `OVERLAPPING_OUTPUTS`
-  (on `src/main/frontend/index.html`) and marks `:vaadinBuildFrontend`
-  non-cacheable — a *false* failure that would mask the real bug. Disabled
-  by default because on the current plugin `:vaadinBuildFrontend`
-  re-executes at a new path (every other task relocates, and same-path
-  `rm -rf build/` still restores FROM-CACHE), so its key is
-  path-dependent. Root cause pinned via `-Dorg.gradle.caching.debug` across
-  two pristine checkouts: six `@Input` **value** properties on
-  `VaadinBuildFrontendTask` hold absolute directory paths hashed verbatim
+- **R**: Relocatability. Runs by default in cold mode (A–H plus R). Copy
+  the project to a fresh absolute path (via `tar --dereference`, excluding
+  `node_modules`/`build`/`.gradle` **and** the generated frontend surface —
+  the whole `src/main/frontend` tree, `src/main/bundles`,
+  `src/main/dev-bundle`) and build there against the **same** shared cache
+  → FROM-CACHE. Guards against absolute paths leaking into the cache key —
+  the reason a *shared* cache exists. `--dereference` resolves the platform
+  mirrors' top-level symlinks so the copy is a fully independent tree. The
+  generated-frontend excludes make the copy match a fresh git checkout (all
+  those paths are gitignored): copying them in instead plants pre-existing
+  task outputs at a checkout with no `.gradle` history, which Gradle flags
+  as `OVERLAPPING_OUTPUTS` (on `src/main/frontend/index.html`) and marks
+  `:vaadinBuildFrontend` non-cacheable — a *false* failure that would mask
+  the real guard. Was historically opt-in while `:vaadinBuildFrontend`
+  re-executed at a new path: six `@Input` **value** properties on
+  `VaadinBuildFrontendTask` held absolute directory paths hashed verbatim
   into the key (`frontendDirectory`, `frontendOutputDirectory`,
   `javaSourceFolder`, `javaResourceFolder`, `npmFolder`,
-  `resourcesOutputDirectory`); the real content inputs relocate fine
-  (`IGNORED_PATH`/`CLASSPATH`/`RELATIVE_PATH`). R is a hard guard that
-  flips green once the plugin makes those path-insensitive — a pending
-  investigation, not an accepted behaviour.
+  `resourcesOutputDirectory`), while the real content inputs relocated fine
+  (`IGNORED_PATH`/`CLASSPATH`/`RELATIVE_PATH`). The Flow plugin now makes
+  those path properties path-insensitive, so R is a standard cold-mode
+  guard; if it regresses, pin the cause with `-Dorg.gradle.caching.debug`
+  (`--cache-debug`) and diff the key breakdown across two checkouts.
 
 Cache-miss guards (NOT FROM-CACHE):
 

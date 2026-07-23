@@ -23,20 +23,14 @@
 #                        platform version (see above).
 #   --flow-version=<v>   Published mode only: override the derived Flow
 #                        version with <v>.
-#   --relocatability     Cold mode only. Also run scenario R (build a copy
-#                        of the project at a different absolute path against
-#                        the same shared cache; :vaadinBuildFrontend must
-#                        come FROM-CACHE). OFF by default: the current
-#                        plugin's key is path-dependent, so R fails until
-#                        that is fixed. Also enabled via RUN_RELOCATABILITY=1.
 #   --cache-debug        Pass -Dorg.gradle.caching.debug=true to every Gradle
 #                        invocation, so each cacheable task logs the
 #                        individual inputs hashed into its build-cache key
 #                        ("Appending ... to build cache key" lines) and the
 #                        final key. Diffing those lines between two builds
-#                        pinpoints which input changed — e.g. why scenario R
-#                        misses the cache at a new path. Also enabled via
-#                        CACHE_DEBUG=1.
+#                        pinpoints which input changed — e.g. if scenario R
+#                        ever regresses to a cache miss at a new path. Also
+#                        enabled via CACHE_DEBUG=1.
 #   --cache=cold         Wipe the local Gradle build cache
 #                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
 #                        to ~/.gradle/caches/build-cache-1) before running,
@@ -68,7 +62,6 @@
 #   C) Edit resource:       messages.properties (not a declared input)
 #   E) Comment-only Java:   trailing comment -> byte-identical bytecode
 #   R) Relocatability:      build a copy at a different absolute path
-#                           (OPT-IN via --relocatability; see below)
 # Cache-miss guards (NOT FROM-CACHE):
 #   D) Modify @Route Java:  main-classpath bytecode changes (bundle same)
 #   F) Add @JsModule:       project frontend module (bundle changes)
@@ -179,11 +172,6 @@ scenario_end() {
 CACHE_MODE=warm
 PLATFORM_MODE=0
 FLOW_OVERRIDE=""
-# Scenario R (relocatability) is a hard guard but OFF by default: on the
-# current plugin :vaadinBuildFrontend has a path-dependent cache key, so
-# R fails until that is fixed. Enable it with --relocatability (or
-# RUN_RELOCATABILITY=1) to investigate / validate a relocatable fix.
-RUN_RELOC=${RUN_RELOCATABILITY:-0}
 # When set, add -Dorg.gradle.caching.debug=true so Gradle logs every input
 # hashed into each task's build-cache key. Enable with --cache-debug or
 # CACHE_DEBUG=1.
@@ -218,10 +206,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --vaadin-platform)
       PLATFORM_MODE=1
-      shift
-      ;;
-    --relocatability)
-      RUN_RELOC=1
       shift
       ;;
     --cache-debug)
@@ -262,8 +246,8 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 script_dir="${repo_root}/scripts"
 
 usage() {
-  echo "usage: $0 [--cache=cold|warm] [--relocatability] [--cache-debug] <project-dir-name> <version>" >&2
-  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--relocatability] [--cache-debug] <project-dir-name> <version>" >&2
+  echo "usage: $0 [--cache=cold|warm] [--cache-debug] <project-dir-name> <version>" >&2
+  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--cache-debug] <project-dir-name> <version>" >&2
 }
 
 # Both modes take exactly <project> <version>; --vaadin-platform only
@@ -805,12 +789,6 @@ assert_bundle_file_contains "$ARCHIVE_GLOB" "$STATS_INNER" "demo-addon-marker"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 scenario_end
-
-if [[ "$RUN_RELOC" -ne 1 ]]; then
-  section "${project}: Scenario R (relocatability) — SKIPPED (pass --relocatability to enable)"
-  success_banner "${project}: all scenarios passed"
-  exit 0
-fi
 
 section "${project}: Scenario R (relocatability — build at a different path)"
 # The whole point of a *shared* build cache is reuse across checkouts at

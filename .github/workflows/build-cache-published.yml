@@ -23,11 +23,6 @@ on:
         description: "Optional Flow version override. Leave empty to derive it from the Vaadin version."
         required: false
         default: ""
-      relocatability:
-        description: "Also run scenario R (relocatability): build each project at a fresh absolute path against the shared cache and require :vaadinBuildFrontend FROM-CACHE. Known-failing on the current plugin, so it runs in a separate opt-in job (with --cache-debug) that does NOT feed the warm matrix."
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: read
@@ -213,69 +208,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: warm-${{ matrix.project }}-logs
-          path: platform/${{ matrix.project }}/*.log
-          if-no-files-found: ignore
-
-  scenarios-relocatability:
-    name: relocatability / ${{ matrix.project }}
-    runs-on: ubuntu-latest
-    needs: resolve-version
-    # Opt-in via the `relocatability` dispatch input. Deliberately a SEPARATE
-    # job — not a flag on scenarios-cold — because scenario R is known-failing
-    # on the current plugin (its :vaadinBuildFrontend cache key embeds
-    # absolute paths). Inside the cold job its failure would skip the "Save
-    # Gradle local build-cache" step and cascade a misleading cache-miss
-    # failure across the whole warm matrix. Isolated here, R's (expected) red
-    # is a distinct signal that leaves cold/warm untouched. It runs the full
-    # cold sequence (A–H) then R at a fresh absolute path, with --cache-debug
-    # so the uploaded logs carry the build-cache key breakdown that pinpoints
-    # which inputs are path-dependent.
-    if: ${{ !cancelled() && github.event.inputs.relocatability == 'true' && needs.resolve-version.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        project:
-          - plain-jar
-          - war
-          - spring-boot-jar
-          - shaded-jar
-          - custom-jar-task
-          - custom-frontend-output
-
-    steps:
-      - name: Checkout test-projects
-        uses: actions/checkout@v5
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Set up Node 24
-        uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v5
-
-      - name: Make scripts executable
-        run: chmod +x scripts/*.sh
-
-      # Full cold sequence + scenario R, against this job's own freshly-wiped
-      # cache (--cache=cold). This job saves NO cache, so it cannot affect the
-      # warm matrix.
-      - name: Run relocatability scenario
-        env:
-          VAADIN_VERSION: ${{ needs.resolve-version.outputs.vaadin-version }}
-          FLOW_VERSION: ${{ needs.resolve-version.outputs.flow-version }}
-        run: bash scripts/run-project.sh --cache=cold --relocatability --cache-debug --vaadin-platform --flow-version="${FLOW_VERSION}" "${{ matrix.project }}" "${VAADIN_VERSION}"
-
-      - name: Upload gradle logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: relocatability-${{ matrix.project }}-logs
           path: platform/${{ matrix.project }}/*.log
           if-no-files-found: ignore

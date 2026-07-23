@@ -59,7 +59,7 @@ Cache-**hit** guards (must come `FROM-CACHE`, bundle unchanged):
 | B | Add a test class (not a `vaadinBuildFrontend` input) | test sources don't affect the bundle |
 | C | Edit `src/main/resources/messages.properties`       | not a declared input |
 | E | Append a comment after the final `}` of the view    | byte-identical bytecode → normalized key still hits |
-| R | Build a copy of the project at a **different absolute path** against the same shared cache | proves the cache key is relocatable, not path-bound — **opt-in, off by default** (see below) |
+| R | Build a copy of the project at a **different absolute path** against the same shared cache | proves the cache key is relocatable, not path-bound |
 
 Cache-**miss** guards (must **not** come `FROM-CACHE`):
 
@@ -76,16 +76,15 @@ when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via
 `scripts/addon-init.gradle` (no project `build.gradle` edit).
 
-Scenario **R is opt-in and off by default** (pass `--relocatability`, or
-set `RUN_RELOCATABILITY=1`). On the plugin as of this writing every task
-relocates *except* `:vaadinBuildFrontend`: after `rm -rf build/` at the
-same path it restores `FROM-CACHE`, but built at a different absolute path
-it re-executes while `compileJava` and friends hit the cache — i.e. its
-cache key is path-dependent. R is a hard guard that will pass once the
-plugin makes that key relocatable; until then it is left disabled so it
-doesn't mask the other scenarios. It is a pending investigation, not an
-accepted behaviour. To see *which* inputs make the key path-dependent,
-re-run with `--cache-debug` and diff the key breakdown (see
+Scenario **R runs in cold mode by default**, alongside A–H. It builds a
+copy of the project at a fresh absolute path against the *same* shared
+cache and requires `:vaadinBuildFrontend` to come `FROM-CACHE` — the whole
+point of a shared cache being reuse across checkouts at different paths.
+This guards against absolute paths leaking back into the cache key. (It
+was historically opt-in while `:vaadinBuildFrontend` had a path-dependent
+key; the Flow plugin now makes that key path-insensitive, so R is a
+standard guard.) If R ever regresses, re-run with `--cache-debug` and diff
+the key breakdown to see *which* inputs turned path-dependent (see
 [Debugging the cache key](#debugging-the-cache-key)).
 
 In **warm** cache mode (the default) the suite skips the cold scenarios
@@ -232,8 +231,8 @@ key (`Appending … to build cache key` lines) followed by the final key.
 Diffing those lines between two builds pinpoints which input changed.
 
 ```bash
-# Cold suite + scenario R with the key breakdown logged.
-bash scripts/run-project.sh --cache=cold --relocatability --cache-debug plain-jar "$FLOW_VERSION"
+# Cold suite (A–H plus R) with the key breakdown logged.
+bash scripts/run-project.sh --cache=cold --cache-debug plain-jar "$FLOW_VERSION"
 
 # Extract the :vaadinBuildFrontend block from the original build and the
 # relocated build, then diff (each log lives in the project dir):
@@ -246,13 +245,17 @@ extract() {
 diff <(extract scenario-a-1.log) <(extract scenario-r.log)
 ```
 
-For scenario R this shows the miss comes from six `@Input` **value**
-properties on `VaadinBuildFrontendTask` that hold absolute directory
-paths hashed verbatim (`frontendDirectory`, `frontendOutputDirectory`,
-`javaSourceFolder`, `javaResourceFolder`, `npmFolder`,
-`resourcesOutputDirectory`) — while the genuine content inputs
-(`applicationProperties` as `IGNORED_PATH`, `projectClassesDirs` as
-`CLASSPATH`) keep an identical fingerprint across paths.
+With a relocatable plugin the two blocks are identical (empty diff) —
+that is scenario R passing. This is also how the original
+path-dependence was pinned down: the diff used to surface six `@Input`
+**value** properties on `VaadinBuildFrontendTask` that held absolute
+directory paths hashed verbatim (`frontendDirectory`,
+`frontendOutputDirectory`, `javaSourceFolder`, `javaResourceFolder`,
+`npmFolder`, `resourcesOutputDirectory`), while the genuine content
+inputs (`applicationProperties` as `IGNORED_PATH`, `projectClassesDirs`
+as `CLASSPATH`) already kept an identical fingerprint across paths. The
+plugin now makes those path properties path-insensitive, so if the diff
+is ever non-empty again it points straight at the regression.
 
 ## CI workflow
 
@@ -267,8 +270,6 @@ is triggered manually via `workflow_dispatch`, with inputs:
   no `flow-m2` artifact). `flow_repo`/`flow_ref` are then ignored. This
   is the source-mode (`com.vaadin.flow` plugin) counterpart to the
   platform-mode published workflow below.
-- `relocatability` (checkbox, default off) — also run the opt-in
-  scenario R. See [Relocatability on demand](#relocatability-on-demand).
 
 The workflow has three job groups:
 
@@ -279,7 +280,8 @@ The workflow has three job groups:
    from source, each job downloads the Flow artifacts into mavenLocal;
    with `flow_version` set it skips that and lets Gradle resolve the
    published Flow. Each job runs
-   `scripts/run-project.sh --cache=cold` and persists the resulting
+   `scripts/run-project.sh --cache=cold` (scenarios A–H plus the
+   relocatability guard R) and persists the resulting
    `~/.gradle/caches/build-cache-1` under a run-scoped Actions cache
    key (discriminated by the built Flow SHA, or the published version).
 3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 6
@@ -291,27 +293,6 @@ The workflow has three job groups:
 Failed runs upload `cold-<project>-logs` / `warm-<project>-logs`
 artifacts containing the Gradle logs.
 
-### Relocatability on demand
-
-Both workflows accept a `relocatability` checkbox input. When ticked,
-they add a fourth matrix job group, **`scenarios-relocatability`**, that
-runs `scripts/run-project.sh --cache=cold --relocatability --cache-debug`
-for every project — i.e. the full cold sequence (A–H) followed by
-scenario R, building each project at a fresh absolute path against the
-shared cache and requiring `:vaadinBuildFrontend == FROM-CACHE`.
-
-It is a **separate** job rather than a flag on `scenarios-cold` on
-purpose: scenario R is [known-failing](#scenarios) on the current plugin
-(its cache key embeds absolute paths), and inside the cold job that
-failure would skip the cache-save step and cascade a misleading
-cache-miss failure across the entire warm matrix. Isolated, R's expected
-red is a distinct signal and the cold/warm jobs are untouched — this job
-saves no cache and feeds nothing downstream. It runs with `--cache-debug`,
-so the failure-log artifacts (`relocatability-<project>-logs`) carry the
-build-cache key breakdown that pinpoints the path-dependent inputs (see
-[Debugging the cache key](#debugging-the-cache-key)). Flip R green by
-fixing the plugin, and this job goes green with no workflow change.
-
 ### Published-artifact workflow
 
 `.github/workflows/build-cache-published.yml` runs the same cold/warm
@@ -320,9 +301,6 @@ Flow. It is `workflow_dispatch` only, with inputs:
 
 - `vaadin_version` (required) — the Vaadin platform version (25+).
 - `flow_version` (optional) — override the derived Flow version.
-- `relocatability` (checkbox, default off) — also run the opt-in
-  scenario R as a separate job (see
-  [Relocatability on demand](#relocatability-on-demand)).
 
 It has no `build-flow` job. Instead a **`resolve-version`** job derives
 the Flow version from the Vaadin version (unless overridden), then the

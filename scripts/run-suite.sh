@@ -3,8 +3,8 @@
 # test project and collect per-project PASS/FAIL into a final summary.
 #
 # Usage:
-#   run-suite.sh [--cache=cold|warm] [--fail-fast] [--relocatability] [--projects="p1 p2 ..."] <version>
-#   run-suite.sh --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--relocatability] [--projects="p1 p2 ..."] <version>
+#   run-suite.sh [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <version>
+#   run-suite.sh --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <version>
 #
 # The trailing <version> is a Flow version in source mode, or a Vaadin
 # platform version with --vaadin-platform. See run-project.sh.
@@ -18,7 +18,7 @@
 #                        version with <v>.
 #   --cache=cold         Default. Run each project with --cache=cold, i.e.
 #                        wipe the shared Gradle build cache and run
-#                        scenarios A–H. Each project's cold run is
+#                        scenarios A–H plus R. Each project's cold run is
 #                        self-contained (it primes and hits its own cache
 #                        within scenario A), so running every project in
 #                        turn is a complete local validation.
@@ -33,10 +33,6 @@
 #                        and restored in isolation (see build-cache.yml).
 #   --fail-fast          Stop at the first failing project. Default is to
 #                        run every project and report all results.
-#   --relocatability     Forward --relocatability to each cold run (adds
-#                        scenario R). OFF by default because the current
-#                        plugin's :vaadinBuildFrontend cache key is
-#                        path-dependent, so R fails until that is fixed.
 #   --projects="a b c"   Space-separated subset to run instead of all.
 #                        Order is preserved; unknown names are rejected.
 #   --help, -h           Show this help and exit.
@@ -73,8 +69,6 @@ FAIL_FAST=0
 SELECTED=()
 PLATFORM_MODE=0
 FLOW_OVERRIDE=""
-# Forward the (off-by-default) relocatability guard to run-project.sh.
-RUN_RELOC=${RUN_RELOCATABILITY:-0}
 
 # Validate and assign a --cache value (cold or warm).
 set_cache_mode() {
@@ -123,10 +117,6 @@ while [[ $# -gt 0 ]]; do
       FAIL_FAST=1
       shift
       ;;
-    --relocatability)
-      RUN_RELOC=1
-      shift
-      ;;
     --projects=*)
       # shellcheck disable=SC2206  # word-splitting on the space-separated list is intended.
       SELECTED=(${1#--projects=})
@@ -162,8 +152,8 @@ done
 # Both modes take exactly one <version>; --vaadin-platform only changes how
 # run-project.sh interprets it.
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 [--cache=cold|warm] [--fail-fast] [--relocatability] [--projects=\"p1 p2 ...\"] <version>" >&2
-  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--relocatability] [--projects=\"p1 p2 ...\"] <version>" >&2
+  echo "usage: $0 [--cache=cold|warm] [--fail-fast] [--projects=\"p1 p2 ...\"] <version>" >&2
+  echo "       $0 --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--projects=\"p1 p2 ...\"] <version>" >&2
   exit 2
 fi
 version=$1
@@ -222,9 +212,6 @@ for project in "${projects[@]}"; do
   # --vaadin-platform (and --flow-version if an override was given); the
   # trailing <version> is passed through unchanged in both modes.
   runner_args=("--cache=${CACHE_MODE}")
-  if [[ "$RUN_RELOC" -eq 1 ]]; then
-    runner_args+=("--relocatability")
-  fi
   if [[ "$PLATFORM_MODE" -eq 1 ]]; then
     runner_args+=("--vaadin-platform")
     if [[ -n "$FLOW_OVERRIDE" ]]; then
