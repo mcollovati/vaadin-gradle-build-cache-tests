@@ -24,8 +24,8 @@ per **configuration-cache pass** (`--cc=off|on|both`, default both): the
 configuration cache is an execution mode that changes *when* task inputs
 are computed and therefore what lands in the build-cache key, so the CC
 pass re-runs the same scenarios, adds an assertion about the fate of
-Gradle's entry, and appends one CC-only scenario (CC-FRESH). Per-project
-opt-out via `CC_COMPATIBLE=0`.
+Gradle's entry, and appends two CC-only scenarios (S and CC-FRESH).
+Per-project opt-out via `CC_COMPATIBLE=0`.
 `scripts/run-suite.sh` is a thin wrapper that runs
 `run-project.sh` over every subproject (canonical list in its
 `ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
@@ -231,13 +231,33 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
   build. FROM-CACHE. The trailing comment shifts no code line numbers, so
   javac emits byte-identical bytecode; guards against a key that keys on
   source text/timestamps rather than normalized compiled output.
+- **S**: CC pass only. Adds a **contentless** marker jar as a file-based
+  dependency (`implementation files(...)`, injected by
+  `scripts/file-dep-init.gradle` with `-PfileDepJar`) and asserts the entry
+  is `STORED` with no problems. The guard for the `classFinderClasspath`
+  serialization defect: a file-based dependency makes that field a *filtered*
+  `FileCollection` whose filter is a Java lambda, which Gradle cannot write
+  into the entry, so the build **fails** ("Configuration cache state could not
+  be cached … `classFinderClasspath` of `GradlePluginAdapter`", then "entry
+  discarded due to serialization error"). The same dependency as a Maven
+  coordinate stores cleanly — the declaration's *shape* is the trigger. The
+  jar is one text file (`build_marker_jar`, built with the JDK's `jar` into
+  `fixtures/build/`): no classes, no frontend, so S varies nothing but that
+  shape, and the rest of the pass — which declares no file dependencies — is
+  its control. Its `run_gradle` exit code is tolerated (`|| true`) on purpose,
+  so the verdict comes from `assert_cc_stored`, which prints the offending
+  `classFinderClasspath` line, instead of from a bare `set -e` abort. Runs
+  **first** of the two CC-only scenarios, ahead of CC-FRESH: any red scenario
+  aborts the pass under `set -e`, so they are ordered by cost and severity —
+  S is one build for a build-breaking defect, CC-FRESH two (one a full
+  frontend regeneration) for a "reconfigure every second build" tax.
 - **H ordering**: scenario H runs in its normal position with the
   configuration cache off, but **last** in the CC pass. On a plugin carrying
-  the `classFinderClasspath` serialization defect (a `files(...)` dependency
-  makes `:vaadinBuildFrontend` unserializable) H fails the *build*, not just
-  an assertion, and `set -e` would then abort the pass before R and CC-FRESH
+  the same `classFinderClasspath` defect H fails the *build*, not just an
+  assertion, and `set -e` would then abort the pass before R and CC-FRESH
   report. It is defined as `run_scenario_h()` with two call sites for that
-  reason.
+  reason. S exists next to it because H's jar also carries a frontend module,
+  so a red H has two readings; S has one.
 - **R**: Relocatability. Runs by default in cold mode (A–I plus R). Its
   second build at the relocated path asserts **UP-TO-DATE** — scenario I's
   invariant from the cache consumer's side; it is the cheap guard that a

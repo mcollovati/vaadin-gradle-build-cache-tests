@@ -37,7 +37,7 @@
 #                        --configuration-cache, and each pass re-wipes the
 #                        build cache so both start cold. The CC pass adds
 #                        entry-fate assertions (stored / reused / no problems)
-#                        and one CC-only scenario, CC-FRESH. "off" is the
+#                        and two CC-only scenarios, CC-FRESH and S. "off" is the
 #                        historical behaviour; "on" is the quick way to
 #                        iterate on a configuration-cache bug. In warm mode
 #                        anything but "off" adds a single CC build.
@@ -95,6 +95,13 @@
 #                  wipes build/ first, so this doubles as "deleting outputs
 #                  must not invalidate it either")
 #   R) STORED x2   the relocated copy excludes ./.gradle, so it has no entry
+#   S) STORED      CC pass only: a file-based `files(...)` dependency (a
+#                  contentless marker jar) must not make :vaadinBuildFrontend
+#                  unserializable. The minimal reproducer of the
+#                  classFinderClasspath defect — H trips the same one, but
+#                  with a jar that also carries a frontend module, so a red H
+#                  is ambiguous where a red S is not. First of the CC-only
+#                  scenarios: one build, and the defect breaks the build.
 #   CC-FRESH)      CC pass only: no src/main/frontend (as on a real checkout),
 #                  store then reuse. Catches the plugin probing a directory
 #                  that the build itself creates.
@@ -744,6 +751,41 @@ build_addon_jar() {
     }
 }
 
+# Build the contentless marker jar used by scenario S, and set $MARKER_JAR.
+#
+# Unlike the demo-addon fixture this jar carries no classes and no frontend
+# resources at all — one text file — because scenario S tests the *shape* of a
+# dependency (`files(...)`), not anything the jar contains. Built with the
+# JDK's `jar` rather than as a Gradle fixture project: there is nothing to
+# compile, and a whole Gradle build per project would cost more than the
+# scenario it feeds. Idempotent, and trivially so: the contents never change,
+# so an existing jar is always current.
+MARKER_JAR=""   # set by build_marker_jar; read by scenario S
+
+build_marker_jar() {
+  MARKER_JAR="${repo_root}/fixtures/build/marker-lib.jar"
+  if [[ -f "$MARKER_JAR" ]]; then
+    return 0
+  fi
+  local jar_bin=jar
+  if ! command -v jar >/dev/null 2>&1; then
+    if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/jar" ]]; then
+      jar_bin="${JAVA_HOME}/bin/jar"
+    else
+      echo "run-project: scenario S needs the JDK's 'jar' tool (not on PATH, and \$JAVA_HOME/bin/jar is missing)" >&2
+      return 1
+    fi
+  fi
+  local stage="${repo_root}/fixtures/build/marker-lib"
+  rm -rf "$stage"
+  mkdir -p "$stage" "$(dirname "$MARKER_JAR")"
+  printf 'Scenario S file-dependency marker. Contents deliberately irrelevant.\n' \
+    > "${stage}/marker.txt"
+  "$jar_bin" cf "$MARKER_JAR" -C "$stage" .
+  rm -rf "$stage"
+  echo "Built scenario-S marker jar: ${MARKER_JAR}"
+}
+
 #---------------------------------------------------------------------
 # Warm-cache mode: skip the cold scenarios, run only the FROM-CACHE assertion.
 # Mirrors what happens when a fresh CI runner restores a build-cache
@@ -1070,6 +1112,12 @@ scenario_end
 # scenario R and CC-FRESH down with it. A known-red scenario must not mask the
 # ones after it, so in the CC pass it runs once everything else has reported.
 #
+# Scenario S is the minimal reproducer of that same defect (a contentless jar
+# as a `files(...)` dependency) and runs earlier in the CC pass, so on a broken
+# plugin the pass reports there — on the scenario whose only variable is the
+# dependency's shape — rather than here, where the jar also carries a frontend
+# module and a red result has two possible readings.
+#
 # The defect: with a file-based (`files(...)`) dependency on the classpath,
 # GradlePluginAdapter.classFinderClasspath becomes a *filtered* FileCollection
 # whose filter is a Java lambda, and Gradle cannot serialize that into the
@@ -1178,9 +1226,57 @@ chmod +x "$reloc_dir/gradlew" 2>/dev/null || true
   assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 )
 
-# Scenario CC-FRESH runs in the CC pass only — with the configuration cache off
-# it is just a slower scenario A.
+# Scenarios S and CC-FRESH run in the CC pass only: with the configuration
+# cache off there is no entry to store or reuse, so neither would assert
+# anything (CC-FRESH would be a slower scenario A, S a slower scenario H).
+#
+# S goes first, deliberately. Under `set -e` any red scenario aborts the pass
+# and hides the ones behind it, so the order here is by cost and severity: S is
+# a single build guarding a defect that breaks the *build* outright for anyone
+# with a local jar on their classpath, where CC-FRESH spends two builds (one a
+# full frontend regeneration) on a "reconfigure every second build" tax. The
+# cheap, severe one reports first.
 if cc_on; then
+  scenario_begin "${project}: Scenario S (file-based dependency: entry must still store)"
+  # A `files(...)` dependency must not make :vaadinBuildFrontend
+  # unserializable.
+  #
+  # The defect it guards (see run_scenario_h for the full bean chain): a
+  # file-based dependency turns GradlePluginAdapter.classFinderClasspath into
+  # a filtered FileCollection whose filter is a Java lambda, which Gradle
+  # cannot write into the entry — "Configuration cache state could not be
+  # cached: ... field `classFinderClasspath` of `GradlePluginAdapter` ...",
+  # then "Configuration cache entry discarded due to serialization error".
+  # The build FAILS; it does not degrade.
+  #
+  # Why this exists next to H, which trips the same defect: H's jar carries a
+  # @Route view with a @JsModule, and H's job is "a dependency's frontend is a
+  # cache input". It catches the serialization defect only as a side effect,
+  # so a red H is two hypotheses. S's jar contains one text file — no classes,
+  # no frontend — so a red S has exactly one reading, and the rest of the pass
+  # (which declares no file dependencies) is the control.
+  build_marker_jar
+  # The store step is the failure point, so the premise is "no reusable entry":
+  # Gradle skips storing when it can reuse, and then the failure never happens.
+  # The init script and the extra -P property would force a fresh entry anyway;
+  # cc_reset makes that unconditional rather than incidental.
+  cc_reset
+  # The exit code is deliberately tolerated so the verdict comes from
+  # assert_cc_stored instead of from `set -e`: the helper prints "expected
+  # configuration cache entry STORED, got: Configuration cache entry discarded
+  # due to serialization error" followed by the log's configuration-cache
+  # lines, which name `classFinderClasspath` outright. Aborting on the bare
+  # exit code would report only "gradle exited 1".
+  run_gradle scenario-s.log "$BUILD_TASK" \
+    --init-script "${script_dir}/file-dep-init.gradle" -PfileDepJar="$MARKER_JAR" || true
+  assert_cc_stored scenario-s.log
+  assert_cc_no_problems scenario-s.log
+  # Nothing else is asserted, and that is the point. Whether the added
+  # classpath entry moves the build-cache key is H's question; the jar carries
+  # nothing that could change the bundle; and on a broken plugin the build dies
+  # at configuration time, so there is no archive to inspect anyway.
+  scenario_end
+
   scenario_begin "${project}: Scenario CC-FRESH (fresh checkout: store then reuse)"
   # The state a CI runner is always in and a local run almost never is:
   # .gitignore ignores **/src/main/frontend/ entirely (nothing under it is

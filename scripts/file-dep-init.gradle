@@ -1,0 +1,30 @@
+// Init script used only by scenario S (configuration-cache serialization).
+// It puts a *file-based* dependency — `files(<jar>)` rather than a Maven
+// coordinate — on every project's implementation classpath, without editing
+// any project's build.gradle, so the scenario stays uniform across all
+// subprojects and both build modes.
+//
+// That single line is the entire scenario. A file-based dependency turns
+// GradlePluginAdapter.classFinderClasspath into a *filtered* FileCollection
+// whose filter is a Java lambda, and Gradle cannot serialize that into a
+// configuration-cache entry — the store aborts and the build fails. The same
+// dependency added as a coordinate stores cleanly, so the shape of the
+// declaration is the trigger, not the act of adding a dependency.
+//
+// The jar's contents are deliberately irrelevant (see build_marker_jar in
+// run-project.sh: one text file, no classes, no frontend resources). That is
+// what separates this scenario from H, whose jar exists to carry a frontend
+// module: here nothing but the dependency's *shape* is under test.
+//
+// The absolute path to the jar is supplied via the -PfileDepJar project
+// property (set by scripts/run-project.sh).
+allprojects {
+    plugins.withId('java') {
+        def fileDepJar = providers.gradleProperty('fileDepJar').getOrNull()
+        if (fileDepJar) {
+            dependencies {
+                add('implementation', files(fileDepJar))
+            }
+        }
+    }
+}

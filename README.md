@@ -86,6 +86,10 @@ relocate) when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via
 `scripts/addon-init.gradle` (no project `build.gradle` edit).
 
+Two further scenarios, **S** and **CC-FRESH**, run only under the
+configuration cache, where what they guard is visible at all — see
+[Configuration cache](#configuration-cache).
+
 Scenario **I** is the only one that asserts `UP-TO-DATE` rather than
 `FROM-CACHE`. It runs two identical builds back to back: after the first,
 nothing changes, so the second must be `UP-TO-DATE`. A bare `SUCCESS`
@@ -131,7 +135,7 @@ with the configuration cache off.
 So cold mode runs the **same scenario set twice** — `--cc=off`, then
 `--cc=on` — and each pass re-wipes the shared build cache so both start
 cold. The CC pass adds one assertion per scenario about the fate of
-Gradle's *entry*, plus one CC-only scenario:
+Gradle's *entry*, plus two CC-only scenarios:
 
 | Scenario | Entry must be | Why |
 |---|---|---|
@@ -139,15 +143,55 @@ Gradle's *entry*, plus one CC-only scenario:
 | I | `REUSED` | the #25387 guard: nothing changed, so nothing may invalidate |
 | B, C, D, E, F, G | `REUSED` | the uniform invariant — no ordinary source, resource or frontend edit may invalidate the entry. Each also wipes `build/` first, so this doubles as "deleting outputs must not invalidate it either" |
 | R (both builds) | `STORED` | the relocated copy excludes `./.gradle`, so it starts with no entry |
+| **S** | `STORED` | CC pass only: a **file-based** `files(…)` dependency must not make `:vaadinBuildFrontend` unserializable |
 | **CC-FRESH** | `STORED` then `REUSED` | CC pass only: no `src/main/frontend` (as on a real checkout), build, build again |
 | H | `STORED` | `--init-script` plus a new `-P` property change the build logic, so a fresh entry is correct |
 
+**Scenario S** is the file-dependency guard. A project that declares
+`implementation files('libs/some-local.jar')` cannot be built with the
+configuration cache at all on a plugin carrying the `classFinderClasspath`
+defect: the field is a *filtered* `FileCollection` whose filter is a Java
+lambda, the JDK refuses reflective access to the lambda's captured
+arguments, and the store aborts —
+
+```
+Configuration cache state could not be cached: … field `classFinderClasspath`
+of `com.vaadin.flow.gradle.GradlePluginAdapter` … error writing value
+> Unable to make field … accessible: module java.base does not "opens
+  java.util.function" to unnamed module
+Configuration cache entry discarded due to serialization error.
+```
+
+The build **fails**; it does not degrade. The same dependency added as a
+Maven coordinate stores cleanly, so the shape of the declaration is the
+trigger, not the act of adding a dependency. There is a build-cache
+consequence too: a build that dies during the store can leave
+`src/main/frontend/index.html` on disk with no matching task history, which
+makes the next build report `[OVERLAPPING_OUTPUTS]` and mark
+`:vaadinBuildFrontend` **non-cacheable**.
+
+S's jar is a **contentless marker** — one text file, no classes, no
+frontend resources — built by `build_marker_jar` into `fixtures/build/` and
+injected via `scripts/file-dep-init.gradle`. That is what separates it from
+H, whose jar exists precisely to carry a frontend module: H trips the same
+defect, but only as a side effect, so a red H has two possible readings.
+S varies nothing but the dependency's shape, and the rest of the pass —
+which declares no file dependencies — is its control. Its build's exit code
+is tolerated on purpose, so the verdict comes from `assert_cc_stored` (which
+prints the offending `classFinderClasspath` line) rather than from a bare
+`set -e` abort.
+
+S is the **first** of the two CC-only scenarios, ahead of CC-FRESH. Under
+`set -e` any red scenario aborts the pass and hides the ones behind it, so
+they are ordered by cost and severity: S is a single build guarding a defect
+that breaks the build outright, where CC-FRESH spends two builds (one a full
+frontend regeneration) on a "reconfigure every second build" tax.
+
 Scenario **H runs last in the CC pass** (in its normal position when the
-configuration cache is off). On a plugin carrying the
-`classFinderClasspath` serialization defect it fails the *build*, not just
-an assertion, and under `set -e` that would abort the pass before R and
-CC-FRESH ever report — a known-red scenario must not mask the ones behind
-it.
+configuration cache is off). On a plugin carrying that same serialization
+defect it fails the *build*, not just an assertion, and under `set -e` that
+would abort the pass before R and CC-FRESH ever report — a known-red
+scenario must not mask the ones behind it.
 
 A configuration-time input therefore reads as a **red CC pass against a
 green CC-off pass**, and Gradle names the offending path itself. That
@@ -463,7 +507,13 @@ the workflow is not exercising what we think it is.
 │   ├── run-project.sh
 │   ├── resolve-flow-version.sh        # Vaadin version -> Flow version
 │   ├── assert-task-outcome.sh
-│   └── assert-cc.sh
+│   ├── assert-cc.sh
+│   ├── addon-init.gradle              # scenario H: inject the add-on jar
+│   └── file-dep-init.gradle           # scenario S: inject a files(...) dep
+├── fixtures/
+│   └── demo-addon/                    # scenario H's add-on (a @Route +
+│                                      #   @JsModule); scenario S's marker
+│                                      #   jar is generated into build/
 ├── plain-jar/                         # source-mode projects (com.vaadin.flow)
 ├── war/
 ├── spring-boot-jar/
