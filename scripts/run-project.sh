@@ -31,12 +31,22 @@
 #                        pinpoints which input changed — e.g. if scenario R
 #                        ever regresses to a cache miss at a new path. Also
 #                        enabled via CACHE_DEBUG=1.
+#   --cc=off|on|both     Which configuration-cache passes cold mode runs over
+#                        the scenario set. Default "both": the same scenarios
+#                        run once with --no-configuration-cache and once with
+#                        --configuration-cache, and each pass re-wipes the
+#                        build cache so both start cold. The CC pass adds
+#                        entry-fate assertions (stored / reused / no problems)
+#                        and one CC-only scenario, CC-FRESH. "off" is the
+#                        historical behaviour; "on" is the quick way to
+#                        iterate on a configuration-cache bug. In warm mode
+#                        anything but "off" adds a single CC build.
 #   --cache=cold         Wipe the local Gradle build cache
 #                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
 #                        to ~/.gradle/caches/build-cache-1) before running,
-#                        then run scenarios A–I plus R. Use this to guarantee
-#                        a cold start when validating cache-population
-#                        behaviour.
+#                        then run scenarios A–I plus R, per --cc pass. Use
+#                        this to guarantee a cold start when validating
+#                        cache-population behaviour.
 #   --cache=warm         Default. Do NOT touch the local Gradle build cache.
 #                        Run only the warm-cache assertion: clean build
 #                        -> :vaadinBuildFrontend must come FROM-CACHE.
@@ -59,8 +69,7 @@
 # Cache-hit guards (bundle unchanged vs the scenario-A baseline):
 #   A) Cold-cache restore:  build -> rm -rf build/ -> build   (FROM-CACHE)
 #   I) Repeat build:        two identical builds in a row     (UP-TO-DATE
-#                           on the 2nd; under --configuration-cache where
-#                           the project sets CC_SCENARIO=1)
+#                           on the 2nd)
 #   B) Add test class:      non-input source added            (FROM-CACHE)
 #   C) Edit resource:       messages.properties, not an input (FROM-CACHE)
 #   E) Comment-only Java:   trailing comment, same bytecode   (FROM-CACHE)
@@ -71,6 +80,33 @@
 #   F) Add @JsModule:       project frontend module (bundle changes)
 #   G) Edit index.html:     frontend template input (bundle changes)
 #   H) Add-on dependency:   jar-carried frontend module (bundle changes)
+#
+# The configuration cache is a *mode*, not a separate feature: it changes WHEN
+# a task's inputs are computed, and so what ends up in its build-cache key.
+# vaadin/flow#25387 is precisely that — a build-cache key bug invisible with
+# the configuration cache off. So the CC pass (--cc) re-runs the same scenarios
+# with --configuration-cache and adds one assertion about the entry's fate:
+#
+#   A) STORED x2   `clean build ...` and `build ...` request different task
+#                  sets, and the task set is part of an entry's identity
+#   I) REUSED      the #25387 guard: nothing changed, so nothing may invalidate
+#   B–G) REUSED    the uniform invariant — no ordinary source, resource or
+#                  frontend edit may invalidate the entry (each of these also
+#                  wipes build/ first, so this doubles as "deleting outputs
+#                  must not invalidate it either")
+#   R) STORED x2   the relocated copy excludes ./.gradle, so it has no entry
+#   CC-FRESH)      CC pass only: no src/main/frontend (as on a real checkout),
+#                  store then reuse. Catches the plugin probing a directory
+#                  that the build itself creates.
+#   H) STORED      --init-script and a new -P property change the build logic,
+#                  so a fresh entry is correct here. Runs LAST in the CC pass
+#                  (in its normal place with CC off) because a plugin carrying
+#                  the classFinderClasspath serialization defect fails the
+#                  *build* here, which would otherwise abort the pass before R
+#                  and CC-FRESH report. See run_scenario_h.
+#
+# A configuration-time input therefore reads as a red CC pass against a green
+# CC-off pass, and Gradle names the offending path in the log.
 #
 # Every project's archive must contain META-INF/VAADIN/webapp/ after the
 # build. A correctly behaving Flow Gradle plugin wires every Vaadin
@@ -181,6 +217,15 @@ FLOW_OVERRIDE=""
 # CACHE_DEBUG=1.
 CACHE_DEBUG=${CACHE_DEBUG:-0}
 
+# Which configuration-cache passes cold mode runs over the scenario set:
+# off (today's behaviour), on (every build under --configuration-cache), or
+# both. See the pass loop at the bottom of this file.
+CC_MODE=both
+
+# The pass currently executing ("off" or "on"). Set by the pass loop and by
+# warm mode; declared here so cc_on() is safe under `set -u` wherever it lands.
+CC_PASS=off
+
 # Validate and assign a --cache value (cold or warm).
 set_cache_mode() {
   case "$1" in
@@ -189,6 +234,19 @@ set_cache_mode() {
       ;;
     *)
       echo "run-project: --cache value must be 'cold' or 'warm' (got '$1')" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# Validate and assign a --cc value (off, on or both).
+set_cc_mode() {
+  case "$1" in
+    off|on|both)
+      CC_MODE=$1
+      ;;
+    *)
+      echo "run-project: --cc value must be 'off', 'on' or 'both' (got '$1')" >&2
       exit 2
       ;;
   esac
@@ -206,6 +264,18 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       set_cache_mode "$2"
+      shift 2
+      ;;
+    --cc=*)
+      set_cc_mode "${1#--cc=}"
+      shift
+      ;;
+    --cc)
+      if [[ $# -lt 2 ]]; then
+        echo "run-project: --cc requires a value (off|on|both)" >&2
+        exit 2
+      fi
+      set_cc_mode "$2"
       shift 2
       ;;
     --vaadin-platform)
@@ -291,15 +361,18 @@ if [[ ! -d "$project_dir" ]]; then
   exit 2
 fi
 
-if [[ "$CACHE_MODE" == "cold" ]]; then
-  cache_dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
+# Wipe the shared local build cache. Cold mode calls this once per pass (see
+# the pass loop at the bottom): scenario A asserts SUCCESS against a cold
+# cache, so a second pass over the same scenarios has to start cold too.
+wipe_build_cache() {
+  local cache_dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1"
   if [[ -d "$cache_dir" ]]; then
     echo "Clearing local Gradle build cache at ${cache_dir}"
     rm -rf "$cache_dir"
   else
     echo "Local Gradle build cache not present at ${cache_dir}; nothing to clear"
   fi
-fi
+}
 
 cd "$project_dir"
 
@@ -315,7 +388,13 @@ MODULE_DIR=""                      # path prefix (trailing /) of the Vaadin modu
 VBF_TASK=":vaadinBuildFrontend"    # task path the scenarios assert on
 BUILD_DIRS=(build)                 # build dirs wiped between scenarios
 AUX_TASKS=(sourcesJar javadocJar)  # sources/javadoc tasks built alongside
-CC_SCENARIO=0                      # run scenario I under --configuration-cache
+# Whether this project's plugin stack can build under Gradle's configuration
+# cache at all. 0 skips the CC pass entirely: a CC-hostile plugin produces
+# failures about *itself*, not about the Flow plugin, and Gradle 9 "gracefully
+# degrades" (prints "Configuration cache disabled ..." and succeeds with no
+# entry), which would leave every CC assertion measuring nothing. Probe before
+# flipping it — see the recipe in README's "Configuration cache" section.
+CC_COMPATIBLE=1                    # run the configuration-cache pass
 case "$project" in
   plain-jar)
     BUILD_TASK="build"
@@ -388,11 +467,9 @@ case "$project" in
     JAVADOC_JAR="web/build/libs/web-javadoc.jar"
     # vaadin/flow#25387 only manifests under Gradle's configuration cache
     # (verified against Vaadin 25.2.6: without it the repeat build is
-    # UP-TO-DATE even on the broken plugin), so scenario I runs its two
-    # builds with --configuration-cache here. Scoped to this project so the
-    # other six are not exposed to unrelated configuration-cache
-    # incompatibilities in their plugin stacks (Shadow, Spring Boot).
-    CC_SCENARIO=1
+    # UP-TO-DATE even on the broken plugin). That is the CC pass's job now —
+    # every project runs it, so this branch needs no special casing. See
+    # scenario I, where the invalidating file is the sibling module's jar.
     ;;
   *)
     echo "run-project: unknown project '${project}'" >&2
@@ -428,13 +505,28 @@ if [[ -z "${GRADLE_BIN:-}" ]]; then
 fi
 echo "Using gradle binary: ${GRADLE_BIN}"
 
+# Configuration-cache flags, spliced AFTER GRADLE_ARGS so they always win.
+#
+# Default OFF and *explicitly* so: the CC-off pass is only meaningful with the
+# configuration cache actually off, and it must stay immune to an ambient
+# org.gradle.configuration-cache=true in the user's ~/.gradle/gradle.properties
+# (this repo ships no gradle.properties of its own to shadow one). Gradle 9.3
+# still defaults to off, but the suite must not depend on that.
+CC_FLAG=(--no-configuration-cache)
+
+# Flags for the CC pass. --configuration-cache-problems=fail is already Gradle
+# 9.3's default; stated explicitly because org.gradle.configuration-cache.
+# problems=warn in a user's gradle.properties would let a problem-ridden entry
+# be stored and quietly weaken every CC assertion.
+CC_FLAG_ON=(--configuration-cache --configuration-cache-problems=fail)
+
 run_gradle() {
   local log=$1; shift
   # Disable set -e around the pipeline so we can return gradle's exit
   # code (PIPESTATUS[0]) rather than having the pipe trigger an exit
   # before `return` runs. The caller's set -e still applies.
   set +e
-  "$GRADLE_BIN" "$@" "${GRADLE_ARGS[@]}" 2>&1 | tee "$log"
+  "$GRADLE_BIN" "$@" "${GRADLE_ARGS[@]}" "${CC_FLAG[@]}" 2>&1 | tee "$log"
   local rc=${PIPESTATUS[0]}
   set -e
   if [[ $rc -ne 0 ]]; then
@@ -492,23 +584,55 @@ assert_outcome() {
   bash "${script_dir}/assert-task-outcome.sh" "$@"
 }
 
-# Assert Gradle *reused* its configuration-cache entry instead of storing a
-# fresh one. On a repeat build with nothing changed, "Configuration cache
-# entry stored." means the previous entry was invalidated — and Gradle names
-# the input that did it ("... cannot be reused because file X has changed"),
-# which is a sharper diagnostic than the task outcome alone. Used by
-# scenario I, where the invalidating file is the sibling module's jar.
-assert_cc_reused() {
-  local log=$1
-  if grep -qF "Configuration cache entry reused." "$log"; then
-    printf '%sOK  %s configuration cache entry reused\n' "$C_GREEN$C_BOLD" "$C_RESET"
-    return 0
+# Configuration-cache assertions. scripts/assert-cc.sh carries the Gradle 9.3
+# message reference these parse, plus the three traps that make a naive grep
+# useless: "Reusing configuration cache." is printed optimistically *before*
+# execution, "entry updated for ..." is a third state, and a gracefully
+# degraded build succeeds with no entry at all.
+#
+# The entry's fate is a sharper diagnostic than the task outcome alone, because
+# Gradle names the input that invalidated it — "... cannot be reused because
+# file 'lib/build/libs/lib.jar' has changed" points straight at
+# vaadin/flow#25387.
+#
+# They are deliberately no-ops outside the CC pass. That is what lets the
+# scenario set stay single-sourced: each scenario states its configuration-cache
+# expectation once, inline and unconditionally, and the CC-off pass simply skips
+# it instead of the file carrying two copies of every scenario body.
+cc_on() { [[ "$CC_PASS" == "on" ]]; }
+
+assert_cc_stored()      { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" STORED; }
+assert_cc_reused()      { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" REUSED; }
+assert_cc_no_problems() { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" NO_PROBLEMS; }
+
+# Unused by the scenarios below: it exists for the inverse investigation —
+# pinning a *known* invalidation while an upstream fix is pending, so that a
+# red scenario becomes a machine-checked bug report instead of a note in a log.
+assert_cc_not_reused() {
+  local log=$1 reason=${2:-}
+  cc_on || return 0
+  if [[ -n "$reason" ]]; then
+    bash "${script_dir}/assert-cc.sh" "$log" NOT_REUSED "$reason"
+  else
+    bash "${script_dir}/assert-cc.sh" "$log" NOT_REUSED
   fi
-  printf '%sFAIL%s configuration cache entry was not reused on an unchanged build\n' \
-    "$C_RED$C_BOLD" "$C_RESET" >&2
-  grep -E "configuration cache cannot be reused|Configuration cache entry" "$log" >&2 || \
-    printf '       (no configuration-cache lines in %s)\n' "$log" >&2
-  return 1
+}
+
+# Delete every stored configuration-cache entry for this build.
+#
+# Gradle keeps them in the *build root's* .gradle/configuration-cache — for
+# multimodule-jar that is multimodule-jar/.gradle/configuration-cache, not
+# web/.gradle. Entries for different requested task sets coexist there, so "the
+# previous build stored one" is not a reset; removing the directory is.
+#
+# Called only where a scenario's premise is a freshly stored entry (A, I and
+# CC-FRESH). Everything else deliberately inherits the previous scenario's
+# entry, because inheriting is what makes "an ordinary edit must not invalidate
+# it" testable at all. Before this existed, scenario I's *first* build reused
+# whatever scenario A had left behind, which made its "two identical builds"
+# really the run's third and fourth.
+cc_reset() {
+  rm -rf .gradle/configuration-cache
 }
 
 #---------------------------------------------------------------------
@@ -626,12 +750,36 @@ build_addon_jar() {
 # from Actions cache storage and is then asked to build.
 #---------------------------------------------------------------------
 if [[ "$CACHE_MODE" == "warm" ]]; then
+  CC_PASS=off
   section "${project}: warm-cache assertion"
   run_gradle warm.log clean "$BUILD_TASK" "${AUX_TASKS[@]}"
   assert_outcome warm.log "$VBF_TASK" FROM-CACHE
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
   assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
   assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
+
+  # Same restored build cache, now with the configuration cache on. This is the
+  # one combination cold mode cannot reproduce: a *fresh runner* that has a
+  # populated build cache but no configuration-cache entry (entries live in the
+  # project's .gradle/ and are never persisted across CI jobs), so it must store
+  # a clean entry and still restore the task from the build cache.
+  #
+  # Asserts STORED, never REUSED: the requested task set is part of an entry's
+  # identity, and this invocation's `clean` makes it a set no other scenario
+  # uses, so it legitimately gets an entry of its own.
+  if [[ "$CC_MODE" != "off" && "$CC_COMPATIBLE" -eq 1 ]]; then
+    CC_PASS=on
+    section "${project}: warm-cache assertion (configuration cache)"
+    cc_reset
+    CC_FLAG=("${CC_FLAG_ON[@]}")
+    run_gradle warm-cc.log clean "$BUILD_TASK" "${AUX_TASKS[@]}"
+    CC_FLAG=(--no-configuration-cache)
+    assert_cc_stored warm-cc.log
+    assert_cc_no_problems warm-cc.log
+    assert_outcome warm-cc.log "$VBF_TASK" FROM-CACHE
+    assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  fi
+
   success_banner "${project}: warm-cache assertion passed"
   exit 0
 fi
@@ -662,6 +810,18 @@ STATS_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/config/stats.json"
 INDEX_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/webapp/index.html"
 view="${MODULE_DIR}src/main/java/com/example/HelloView.java"
 
+# The whole cold scenario set, run once per configuration-cache pass (see the
+# pass loop at the end of this file). $CC_PASS is "off" or "on"; the scenarios
+# read it only through cc_on / the assert_cc_* helpers, which no-op when it is
+# off — so there is exactly one copy of every scenario body, and the CC pass
+# adds assertions to it rather than duplicating it.
+#
+# The body below is deliberately NOT indented into this function: several
+# scenarios write fixture files with unquoted-terminator here-documents, whose
+# closing EOF must stay at column 0.
+run_cold_scenarios() {
+CC_PASS=$1
+
 # Start from a clean generated frontend state so a cold run is
 # deterministic regardless of what a previous local run left behind — CI
 # always runs on a fresh checkout, but locally the (gitignored) packaged
@@ -670,12 +830,34 @@ view="${MODULE_DIR}src/main/java/com/example/HelloView.java"
 # scenario/run would poison scenario A's baseline (e.g. a leftover bundle
 # already containing scenario F's module makes F's change a no-op). These
 # dirs are all generated and gitignored; scenario A rebuilds them.
-echo "Clearing generated frontend state (bundles/, dev-bundle/, frontend/generated/)"
-rm -rf "${MODULE_DIR}src/main/bundles" "${MODULE_DIR}src/main/dev-bundle" "${MODULE_DIR}src/main/frontend/generated"
+#
+# src/main/frontend goes too, not just its generated/ subdirectory. The whole
+# tree is gitignored, so a fresh checkout does not have it — and a leftover
+# src/main/frontend/index.html is a *declared output* of vaadinBuildFrontend
+# (outputProperties....frontendIndexHtml). If it is on disk without matching
+# task history, Gradle marks the task non-cacheable for that build:
+#
+#   Non-cacheable because Gradle does not know how file
+#   'src/main/frontend/index.html' was created ... [OVERLAPPING_OUTPUTS]
+#
+# which stores nothing, so scenario A-2's FROM-CACHE assertion then fails for
+# a reason that has nothing to do with the plugin. (Observed locally after a
+# run aborted mid-build; scenario R already excludes this same path from its
+# relocated copy for exactly this reason.) Wiping it makes every local pass
+# start in the state CI is always in.
+echo "Clearing generated frontend state (frontend/, bundles/, dev-bundle/)"
+rm -rf "${MODULE_DIR}src/main/frontend" "${MODULE_DIR}src/main/bundles" "${MODULE_DIR}src/main/dev-bundle"
 
 section "${project}: Scenario A (cold-cache restore)"
+# Both builds STORE rather than reuse, and correctly so: the requested task set
+# is part of an entry's identity, so `clean build ...` and `build ...` are two
+# different entries. cc_reset makes the first a genuine store even when a
+# previous run or pass left entries behind.
+cc_reset
 run_gradle scenario-a-1.log clean "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-a-1.log "$VBF_TASK" SUCCESS
+assert_cc_stored scenario-a-1.log
+assert_cc_no_problems scenario-a-1.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
@@ -686,6 +868,8 @@ capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 rm -rf "${BUILD_DIRS[@]}"
 run_gradle scenario-a-2.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-a-2.log "$VBF_TASK" FROM-CACHE
+assert_cc_stored scenario-a-2.log
+assert_cc_no_problems scenario-a-2.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -706,23 +890,24 @@ scenario_begin "${project}: Scenario I (repeat build with no changes)"
 # reported as SUCCESS, or as FROM-CACHE when that second key is already in
 # the cache. UP-TO-DATE is the only correct outcome.
 #
-# The bug only surfaces under the configuration cache (measured against
-# Vaadin 25.2.6: without --configuration-cache the repeat build is
-# UP-TO-DATE even on the broken plugin), so projects that set
-# CC_SCENARIO=1 run both builds with it and additionally assert Gradle
-# reused its entry. Gradle names the invalidating input in that case
-# ("cannot be reused because file 'lib/build/libs/lib.jar' has changed"),
-# which points straight at the cause.
-cc_args=()
-if [[ "$CC_SCENARIO" -eq 1 ]]; then
-  cc_args=(--configuration-cache)
-fi
-run_gradle scenario-i-1.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${cc_args[@]}"
-run_gradle scenario-i-2.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${cc_args[@]}"
+# The bug only surfaces under the configuration cache — measured against Vaadin
+# 25.2.6, without it the repeat build is UP-TO-DATE even on the broken plugin —
+# which is why this scenario is the centrepiece of the CC pass and only a cheap
+# sanity check in the CC-off pass. In the CC pass Gradle names the invalidating
+# input itself ("cannot be reused because file 'lib/build/libs/lib.jar' has
+# changed"), pointing straight at the cause.
+#
+# cc_reset before the first build is load-bearing, not hygiene: if build 1
+# reused the entry scenario A left behind, the dependency-jar fingerprint would
+# never be recomputed — the task graph would simply be deserialized — and the
+# bug would be masked rather than exposed.
+cc_reset
+run_gradle scenario-i-1.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_cc_stored scenario-i-1.log
+assert_cc_no_problems scenario-i-1.log
+run_gradle scenario-i-2.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-i-2.log "$VBF_TASK" UP-TO-DATE
-if [[ "$CC_SCENARIO" -eq 1 ]]; then
-  assert_cc_reused scenario-i-2.log
-fi
+assert_cc_reused scenario-i-2.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -748,6 +933,7 @@ public class AddedTest {
 EOF
 run_gradle scenario-b.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-b.log "$VBF_TASK" FROM-CACHE
+assert_cc_reused scenario-b.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -767,6 +953,7 @@ register_cleanup "[[ -f '$resource.bak' ]] && mv '$resource.bak' '$resource'"
 echo "# scenario C marker $(date -u +%s)" >> "$resource"
 run_gradle scenario-c.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-c.log "$VBF_TASK" FROM-CACHE
+assert_cc_reused scenario-c.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -784,6 +971,7 @@ register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 sed -i 's/Hello, Vaadin!/Hello, Vaadin (edited)!/' "$view"
 run_gradle scenario-d.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-d.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_reused scenario-d.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -800,6 +988,7 @@ register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 printf '\n// scenario E: comment-only edit — must not invalidate the bundle\n' >> "$view"
 run_gradle scenario-e.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-e.log "$VBF_TASK" FROM-CACHE
+assert_cc_reused scenario-e.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -823,6 +1012,7 @@ sed -i 's#^import com.vaadin.flow.router.Route;#import com.vaadin.flow.component
 sed -i 's#^@Route("")#@JsModule("./marker-widget.js")\n@Route("")#' "$view"
 run_gradle scenario-f.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-f.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_reused scenario-f.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_file_contains "$ARCHIVE_GLOB" "$STATS_INNER" "marker-widget"
@@ -863,6 +1053,7 @@ g_marker="scenario-g-marker-$(date -u +%s)"
 sed -i "s#</head>#  <meta name=\"${g_marker}\" content=\"1\" />\n</head>#" "$idx"
 run_gradle scenario-g.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-g.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_reused scenario-g.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_file_contains "$ARCHIVE_GLOB" "$INDEX_INNER" "$g_marker"
@@ -870,6 +1061,27 @@ assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 scenario_end
 
+# Scenario H lives in a function because the two passes run it at different
+# points: in its natural place for the CC-off pass, but LAST in the CC pass.
+#
+# The reason is that on a plugin carrying the configuration-cache
+# serialization defect below, H does not merely fail an assertion — the Gradle
+# build itself fails, which under `set -e` ends the pass and would take
+# scenario R and CC-FRESH down with it. A known-red scenario must not mask the
+# ones after it, so in the CC pass it runs once everything else has reported.
+#
+# The defect: with a file-based (`files(...)`) dependency on the classpath,
+# GradlePluginAdapter.classFinderClasspath becomes a *filtered* FileCollection
+# whose filter is a Java lambda, and Gradle cannot serialize that into the
+# entry — "Configuration cache state could not be cached: ... field
+# `classFinderClasspath` of `com.vaadin.flow.gradle.GradlePluginAdapter` ...",
+# then "Configuration cache entry discarded due to serialization error".
+# Reproduced on published Vaadin 25.2.6 and on Flow 25.3-SNAPSHOT, in both
+# single- and multi-module projects, and whether the dependency is declared in
+# build.gradle or injected by an init script. The same dependency added as a
+# Maven coordinate stores cleanly, so it is the file-based form that triggers
+# it, not the declaration style or the act of adding a dependency.
+run_scenario_h() {
 scenario_begin "${project}: Scenario H (add-on dependency with frontend resources)"
 # A frontend resource carried by a dependency jar. The add-on ships a
 # @Route view (discovered classpath-wide) whose @JsModule stages
@@ -882,12 +1094,21 @@ addon_jar="${repo_root}/fixtures/demo-addon/build/libs/demo-addon.jar"
 run_gradle scenario-h.log "$BUILD_TASK" "${AUX_TASKS[@]}" \
   --init-script "${script_dir}/addon-init.gradle" -PdemoAddonJar="$addon_jar"
 assert_outcome scenario-h.log "$VBF_TASK" NOT_FROM_CACHE
+# STORED, not reused: the init script and the extra -P property change the
+# build logic, so a fresh entry is the correct outcome here.
+assert_cc_stored scenario-h.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_file_contains "$ARCHIVE_GLOB" "$STATS_INNER" "demo-addon-marker"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 scenario_end
+}
+
+# CC-off pass: H in its natural position, before R.
+if ! cc_on; then
+  run_scenario_h
+fi
 
 section "${project}: Scenario R (relocatability — build at a different path)"
 # The whole point of a *shared* build cache is reuse across checkouts at
@@ -929,21 +1150,118 @@ tar -cf - --dereference "${tar_excludes[@]}" -C . . | tar -xf - -C "$reloc_dir"
 chmod +x "$reloc_dir/gradlew" 2>/dev/null || true
 (
   cd "$reloc_dir"
+  # The copy excludes ./.gradle, so this tree has no configuration-cache entry
+  # of its own and must store a fresh one.
   run_gradle "${project_dir}/scenario-r.log" clean "$BUILD_TASK"
   assert_outcome "${project_dir}/scenario-r.log" "$VBF_TASK" FROM-CACHE
+  assert_cc_stored "${project_dir}/scenario-r.log"
+  assert_cc_no_problems "${project_dir}/scenario-r.log"
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
   assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 
   # Scenario I's invariant, seen from the cache *consumer* side: the first
   # build here restored outputs from the shared cache, so an immediate
-  # identical build must be UP-TO-DATE. Note this runs without
-  # --configuration-cache, so it does not reproduce vaadin/flow#25387 (that
-  # needs the configuration cache — see scenario I); it is the cheap
-  # general guard that a relocated consumer settles after one build.
+  # identical build must be UP-TO-DATE.
+  #
+  # It STORES rather than reuses, and that is correct: the requested task set is
+  # part of a configuration-cache entry's identity, and this build asks for
+  # "$BUILD_TASK" where the one above asked for "clean $BUILD_TASK" (verified —
+  # Gradle reports "no cached configuration is available for tasks: build ..."
+  # even with an entry for "clean build ..." on disk). So scenario R guards that
+  # a relocated tree stores a clean entry; the reuse invariant is scenario I's
+  # and B–G's job.
   run_gradle "${project_dir}/scenario-r2.log" "$BUILD_TASK"
   assert_outcome "${project_dir}/scenario-r2.log" "$VBF_TASK" UP-TO-DATE
+  assert_cc_stored "${project_dir}/scenario-r2.log"
+  assert_cc_no_problems "${project_dir}/scenario-r2.log"
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
   assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 )
+
+# Scenario CC-FRESH runs in the CC pass only — with the configuration cache off
+# it is just a slower scenario A.
+if cc_on; then
+  scenario_begin "${project}: Scenario CC-FRESH (fresh checkout: store then reuse)"
+  # The state a CI runner is always in and a local run almost never is:
+  # .gitignore ignores **/src/main/frontend/ entirely (nothing under it is
+  # tracked), so on a fresh checkout that directory does not exist and the first
+  # build creates it. If the Flow plugin probes it while the task graph is being
+  # configured, Gradle records a file-system-check input on a path that did not
+  # exist, and the very next build invalidates with
+  #   Calculating task graph as configuration cache cannot be reused because
+  #   the file system entry '<module>/src/main/frontend' has been created.
+  #
+  # scenario_begin has already wiped the build dirs and the packaged bundles;
+  # add the generated frontend surface and every stored entry so build 1 sees
+  # exactly what CI sees. Everything removed here is generated and gitignored,
+  # so there is nothing to register a cleanup for — build 1 regenerates it.
+  cc_reset
+  rm -rf "${MODULE_DIR}src/main/frontend"
+
+  # Build 1 regenerates the frontend surface from scratch, so its bundle may
+  # legitimately differ from scenario A's baseline (Flow regenerates the app
+  # shell). Compare build 2 against build 1 instead, then restore the pass-wide
+  # baseline for anything that runs after this scenario.
+  #
+  # No outcome assertion on build 1: the build cache is already warm from the
+  # earlier scenarios, so both SUCCESS and FROM-CACHE are correct here. Scenario
+  # I sets the same precedent.
+  ccfresh_saved_baseline=$BASELINE_SIG
+  run_gradle scenario-cc-fresh-1.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+  assert_cc_stored scenario-cc-fresh-1.log
+  assert_cc_no_problems scenario-cc-fresh-1.log
+  assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+
+  run_gradle scenario-cc-fresh-2.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+  assert_cc_reused scenario-cc-fresh-2.log
+  assert_outcome scenario-cc-fresh-2.log "$VBF_TASK" UP-TO-DATE
+  assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  BASELINE_SIG=$ccfresh_saved_baseline
+  scenario_end
+
+  # CC pass: scenario H runs last, so that its known configuration-cache
+  # serialization failure (see run_scenario_h) cannot abort the pass before R
+  # and CC-FRESH have reported. Everything above has already run at this point.
+  run_scenario_h
+fi
+}
+
+#---------------------------------------------------------------------
+# Pass loop. The configuration cache is a *mode*, not a separate feature: it
+# changes WHEN a task's inputs are computed, and therefore what ends up in its
+# build-cache key. vaadin/flow#25387 is exactly that — a build-cache key bug
+# invisible with the configuration cache off — so the same scenarios are run
+# under both settings and the contrast is the diagnosis. A configuration-time
+# input shows up as a red CC pass against a green CC-off pass, and Gradle names
+# the offending path in the log.
+#
+# Each pass re-wipes the shared build cache: scenario A asserts SUCCESS against
+# a cold cache, so a second pass over the same scenarios has to start cold too.
+#---------------------------------------------------------------------
+case "$CC_MODE" in
+  off)  cc_passes=(off) ;;
+  on)   cc_passes=(on) ;;
+  both) cc_passes=(off on) ;;
+esac
+
+for cc_pass in "${cc_passes[@]}"; do
+  if [[ "$cc_pass" == "on" && "$CC_COMPATIBLE" -ne 1 ]]; then
+    section "${project}: configuration-cache pass skipped (CC_COMPATIBLE=0)"
+    continue
+  fi
+  if [[ ${#cc_passes[@]} -gt 1 ]]; then
+    section "${project}: ===== configuration cache: ${cc_pass} ====="
+  fi
+  if [[ "$cc_pass" == "on" ]]; then
+    CC_FLAG=("${CC_FLAG_ON[@]}")
+  else
+    CC_FLAG=(--no-configuration-cache)
+  fi
+  wipe_build_cache
+  cc_reset
+  run_cold_scenarios "$cc_pass"
+done
 
 success_banner "${project}: all scenarios passed"

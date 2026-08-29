@@ -3,8 +3,8 @@
 # test project and collect per-project PASS/FAIL into a final summary.
 #
 # Usage:
-#   run-suite.sh [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <version>
-#   run-suite.sh --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--fail-fast] [--projects="p1 p2 ..."] <version>
+#   run-suite.sh [--cache=cold|warm] [--cc=off|on|both] [--fail-fast] [--projects="p1 p2 ..."] <version>
+#   run-suite.sh --vaadin-platform [--flow-version=<v>] [--cache=cold|warm] [--cc=off|on|both] [--fail-fast] [--projects="p1 p2 ..."] <version>
 #
 # The trailing <version> is a Flow version in source mode, or a Vaadin
 # platform version with --vaadin-platform. See run-project.sh.
@@ -18,10 +18,18 @@
 #                        version with <v>.
 #   --cache=cold         Default. Run each project with --cache=cold, i.e.
 #                        wipe the shared Gradle build cache and run
-#                        scenarios A–H plus R. Each project's cold run is
+#                        scenarios A–I plus R, once per configuration-cache
+#                        pass (see --cc). Each project's cold run is
 #                        self-contained (it primes and hits its own cache
 #                        within scenario A), so running every project in
 #                        turn is a complete local validation.
+#   --cc=off|on|both     Forwarded to run-project.sh: which configuration-cache
+#                        passes to run over the scenario set. Default there is
+#                        "both". Use --cc=off for a quick build-cache-only
+#                        sweep, --cc=on to iterate on a configuration-cache
+#                        regression.
+#   --cache-debug        Forwarded to run-project.sh: log the individual
+#                        inputs hashed into each task's build-cache key.
 #   --cache=warm         Run each project with --cache=warm (clean build
 #                        must hit FROM-CACHE). NOTE: this expects every
 #                        project's cache to already be populated. Because
@@ -70,6 +78,11 @@ FAIL_FAST=0
 SELECTED=()
 PLATFORM_MODE=0
 FLOW_OVERRIDE=""
+# Flags forwarded verbatim to run-project.sh. Kept as a list rather than
+# mirrored into named variables so the suite never has to restate
+# run-project.sh's defaults — an empty entry simply means "let the runner
+# decide".
+PASSTHROUGH=()
 
 # Validate and assign a --cache value (cold or warm).
 set_cache_mode() {
@@ -112,6 +125,18 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       FLOW_OVERRIDE="$2"
+      shift 2
+      ;;
+    --cc=*|--cache-debug)
+      PASSTHROUGH+=("$1")
+      shift
+      ;;
+    --cc)
+      if [[ $# -lt 2 ]]; then
+        echo "run-suite: --cc requires a value (off|on|both)" >&2
+        exit 2
+      fi
+      PASSTHROUGH+=("--cc=$2")
       shift 2
       ;;
     --fail-fast)
@@ -213,6 +238,10 @@ for project in "${projects[@]}"; do
   # --vaadin-platform (and --flow-version if an override was given); the
   # trailing <version> is passed through unchanged in both modes.
   runner_args=("--cache=${CACHE_MODE}")
+  # Guarded: expanding an empty array is an error under `set -u` on bash < 4.4.
+  if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
+    runner_args+=("${PASSTHROUGH[@]}")
+  fi
   if [[ "$PLATFORM_MODE" -eq 1 ]]; then
     runner_args+=("--vaadin-platform")
     if [[ -n "$FLOW_OVERRIDE" ]]; then

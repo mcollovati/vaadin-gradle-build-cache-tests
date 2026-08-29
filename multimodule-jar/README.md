@@ -29,11 +29,20 @@ on this fixture against Vaadin 25.2.6:
 | `+ --configuration-cache` | `SUCCESS`, entry stored | **re-executes**, entry stored again | `UP-TO-DATE`, entry reused |
 
 Gradle names the culprit on that second build: `configuration cache cannot
-be reused because file 'lib/build/libs/lib.jar' has changed`. So this
-project sets `CC_SCENARIO=1`, which makes scenario I run both builds with
-`--configuration-cache` and additionally assert the entry was reused. The
-other six projects run scenario I without CC — a cheap sanity check, not a
-#25387 guard.
+be reused because file 'lib/build/libs/lib.jar' has changed`. That is why
+cold mode runs the whole scenario set twice — once with the configuration
+cache off, once with it on (`--cc=off|on|both`, default both). Scenario I's
+copy in the CC pass is the #25387 guard: it asserts the first build
+**stored** an entry and the second **reused** it. Its CC-off copy is only a
+cheap sanity check, since a broken plugin passes it.
+
+A `cc_reset` runs before scenario I's first build, and it is load-bearing
+rather than hygiene: if that build reused the entry scenario A left behind,
+the dependency-jar fingerprint would never be recomputed — the task graph
+would simply be deserialized — and the bug would be masked instead of
+exposed. Before the CC pass existed, scenario I's first build did exactly
+that (its log opened with `Reusing configuration cache.`), which made its
+"two identical builds" really the run's third and fourth.
 
 Note that the *third* build is `UP-TO-DATE` even on the broken plugin, so
 an assertion placed one build later would pass on a regression.
@@ -94,6 +103,16 @@ Expected outcome:
   to both invocations to see the #25387 regression: on a broken plugin the
   second build re-executes and Gradle re-stores its configuration-cache
   entry.
+
+**Create `web/src/main/frontend` before the first build** when reproducing
+by hand. That directory is gitignored, so a fresh checkout does not have it
+and the first build creates it — which on its own makes the second build
+refuse to reuse the entry, for the unrelated reason `the file system entry
+'web/src/main/frontend' has been created`. Mistaking that for #25387 costs
+an afternoon. The scripted run covers this case deliberately as scenario
+CC-FRESH, which is why CC-FRESH and scenario I are kept separate: CC-FRESH
+red with scenario I green isolates the frontend-directory probe, both red
+means #25387 as well.
 
 ## Scripted run
 

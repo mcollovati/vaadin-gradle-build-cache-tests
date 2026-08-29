@@ -19,7 +19,13 @@ real assertions live in `scripts/`.
 
 `scripts/run-project.sh` drives one subproject through the same
 fixed scenario set (A–I plus relocatability scenario R in cold mode;
-single FROM-CACHE assertion in warm mode);
+single FROM-CACHE assertion in warm mode). Cold mode runs that set once
+per **configuration-cache pass** (`--cc=off|on|both`, default both): the
+configuration cache is an execution mode that changes *when* task inputs
+are computed and therefore what lands in the build-cache key, so the CC
+pass re-runs the same scenarios, adds an assertion about the fate of
+Gradle's entry, and appends one CC-only scenario (CC-FRESH). Per-project
+opt-out via `CC_COMPATIBLE=0`.
 `scripts/run-suite.sh` is a thin wrapper that runs
 `run-project.sh` over every subproject (canonical list in its
 `ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
@@ -33,7 +39,12 @@ new entry in the matrix in `.github/workflows/build-cache.yml`.
 Assertions about Gradle task outcomes go through
 `scripts/assert-task-outcome.sh`, which parses `--console=plain` logs
 for `> Task :foo` lines and matches the suffix (`FROM-CACHE`,
-`UP-TO-DATE`, none = SUCCESS). The archive content check is a
+`UP-TO-DATE`, none = SUCCESS); its configuration-cache counterpart is
+`scripts/assert-cc.sh`, which parses the same logs for the fate of
+Gradle's CC entry (`STORED`/`REUSED`/`UPDATED`/`NOT_REUSED`/`NO_PROBLEMS`)
+and carries the Gradle 9.3 message reference. Both are standalone so they
+can be run against a log downloaded from a failed CI run. The archive
+content check is a
 `unzip -l | grep META-INF/VAADIN/webapp/` on the produced
 jar/war.
 
@@ -134,8 +145,9 @@ Measured against Vaadin 25.2.6 on this fixture: with `--configuration-cache`
 the second of two identical builds re-executes and Gradle re-stores the CC
 entry (`cannot be reused because file 'lib/build/libs/lib.jar' has
 changed`); without it, the second build is plain UP-TO-DATE and the bug is
-invisible. That is why `multimodule-jar` sets `CC_SCENARIO=1` — a scenario I
-without CC would pass on the broken plugin.
+invisible. That is why cold mode runs the whole scenario set twice, once
+per configuration-cache pass — a scenario I without CC would pass on the
+broken plugin.
 
 Because everything the scenarios edit lives under `web/`, the runner
 addresses scenario paths through `$MODULE_DIR` (`""` for the
@@ -199,15 +211,13 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
   current (how the bug reads once the second key is in the cache).
   - **Requires the configuration cache.** Measured against Vaadin 25.2.6:
     without `--configuration-cache` the repeat build is UP-TO-DATE even on
-    the broken plugin, so a non-CC assertion here is worthless as a guard.
-    Projects opt in with `CC_SCENARIO=1` in their `case` branch — currently
-    only `multimodule-jar`, so the other six are not exposed to unrelated
-    CC incompatibilities in their plugin stacks (Shadow, Spring Boot). Those
-    six still run the two builds without CC as a cheap sanity check.
-  - When CC is on, the scenario also asserts Gradle **reused** its entry
-    (`assert_cc_reused`). A re-store is the same bug reported by Gradle
-    itself, and it names the culprit: `configuration cache cannot be reused
-    because file 'lib/build/libs/lib.jar' has changed`.
+    the broken plugin, so the CC-off pass's copy of this scenario is only a
+    cheap sanity check. The CC pass is the real guard.
+  - In the CC pass the scenario also asserts Gradle **stored** an entry on
+    the first build (after `cc_reset`, so it is a genuine store) and
+    **reused** it on the second. A re-store is the same bug reported by
+    Gradle itself, and it names the culprit: `configuration cache cannot be
+    reused because file 'lib/build/libs/lib.jar' has changed`.
   - Load-bearing only for `multimodule-jar`: the single-module projects
     have no project jars in that fingerprint.
 - **B**: Add `src/test/java/com/example/AddedTest.java` → build. FROM-CACHE.
@@ -221,11 +231,20 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
   build. FROM-CACHE. The trailing comment shifts no code line numbers, so
   javac emits byte-identical bytecode; guards against a key that keys on
   source text/timestamps rather than normalized compiled output.
+- **H ordering**: scenario H runs in its normal position with the
+  configuration cache off, but **last** in the CC pass. On a plugin carrying
+  the `classFinderClasspath` serialization defect (a `files(...)` dependency
+  makes `:vaadinBuildFrontend` unserializable) H fails the *build*, not just
+  an assertion, and `set -e` would then abort the pass before R and CC-FRESH
+  report. It is defined as `run_scenario_h()` with two call sites for that
+  reason.
 - **R**: Relocatability. Runs by default in cold mode (A–I plus R). Its
   second build at the relocated path asserts **UP-TO-DATE** — scenario I's
-  invariant from the cache consumer's side, but without
-  `--configuration-cache`, so it does *not* reproduce #25387; it is the
-  cheap guard that a relocated consumer settles after one build. Copy
+  invariant from the cache consumer's side; it is the cheap guard that a
+  relocated consumer settles after one build. In the CC pass both of its
+  builds assert **STORED**, not reused: the copy excludes `./.gradle` so
+  the tree starts with no entry, and its two builds request different task
+  sets (`clean build` then `build`), which are different entries. Copy
   the project to a fresh absolute path (via `tar --dereference`, excluding
   `node_modules`/`build`/`.gradle` **and** the generated frontend surface —
   the whole `src/main/frontend` tree, `src/main/bundles`,
@@ -297,13 +316,17 @@ of `build-cache-published.yml`'s platform-plugin path. Three jobs:
 1. `build-flow` installs the plugin to `~/.m2/repository`, then
    uploads only `com/vaadin/**` as `flow-m2.tgz` to avoid shipping
    Maven Central noise to the matrix jobs.
-2. `scenarios-cold` (matrix over all subprojects) restores the
-   artifact, runs `--cache=cold`, and saves
+2. `scenarios-cold` (matrix over all subprojects **× `cc: [off, on]`**)
+   restores the artifact, runs `--cache=cold --cc=<leg>`, and saves
    `~/.gradle/caches/build-cache-1` under a key scoped to
    `(matrix.project, flow-sha, run_id, run_attempt)`. Including
    `run_attempt` matters — Actions cache writes are write-once, so
    without it a "Re-run all jobs" would no-op against the prior
-   attempt's cache.
+   attempt's cache. For that same write-once reason **only the `cc: off`
+   leg saves**: the key is deliberately not scoped by `matrix.cc`,
+   because the warm job restores one key and must not have to pick a
+   leg, so two writers would be a race. A side benefit is that a
+   configuration-cache regression cannot starve the warm job.
 3. `scenarios-warm` (matrix) restores the matching cold cache on a
    fresh runner and runs `--cache=warm`. `fail-on-cache-miss: true`
    on the restore step is deliberate: a silent pass on a cold cache
@@ -334,10 +357,11 @@ what we think.
    module, trailing slash), `VBF_TASK` (the asserted task path),
    `BUILD_DIRS` (every module's build dir) and `AUX_TASKS` (qualified
    sources/javadoc task paths); the defaults above the `case` cover the
-   single-module shape. `CC_SCENARIO=1` opts the project's scenario I into
-   `--configuration-cache` (only worth it where a project dependency makes
-   #25387 reachable, and only if the project's plugins are CC-compatible).
-   See the `multimodule-jar` branch. `BUNDLE_PREFIX`
+   single-module shape. `CC_COMPATIBLE` defaults to `1`; set it to `0` only
+   if the project's plugin stack cannot build under `--configuration-cache`,
+   with a comment naming the offending plugin (probe first — see README's
+   "Configuration cache" section; all seven current projects are
+   compatible). `BUNDLE_PREFIX`
    is the prefix inside the archive where the Flow plugin stages the
    bundle (`""` for jars, `WEB-INF/classes/` for wars). Spring Boot
    `bootJar` also uses `""`: since Flow PR #25001 (25.3.0-alpha4) the

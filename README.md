@@ -102,16 +102,12 @@ against Vaadin 25.2.6 on this fixture: with `--configuration-cache` the
 second build re-executes and Gradle re-stores its entry, reporting
 `configuration cache cannot be reused because file 'lib/build/libs/lib.jar'
 has changed`; *without* it, the second build is plain `UP-TO-DATE` and the
-regression is invisible. So a project opts into the CC variant with
-`CC_SCENARIO=1` in its `case` branch — currently only `multimodule-jar`,
-which also asserts the entry was reused. The other six run the same two
-builds without CC, which is a cheap sanity check rather than a #25387
-guard, and keeps them clear of unrelated CC incompatibilities in the
-Shadow and Spring Boot plugins.
+regression is invisible. That is why the whole scenario set is run twice —
+see [Configuration cache](#configuration-cache) below.
 
 Scenario R's second build asserts the same UP-TO-DATE invariant at the
-relocated path. It also runs without CC, so it is a general guard that a
-relocated consumer settles after one build — not a second #25387 guard.
+relocated path, a general guard that a relocated consumer settles after
+one build.
 
 Scenario **R runs in cold mode by default**, alongside A–I. It builds a
 copy of the project at a fresh absolute path against the *same* shared
@@ -123,6 +119,86 @@ key; the Flow plugin now makes that key path-insensitive, so R is a
 standard guard.) If R ever regresses, re-run with `--cache-debug` and diff
 the key breakdown to see *which* inputs turned path-dependent (see
 [Debugging the cache key](#debugging-the-cache-key)).
+
+## Configuration cache
+
+Gradle's configuration cache is not a second feature tested alongside the
+build cache — it is an **execution mode** that changes *when* a task's
+inputs are computed, and therefore what ends up in its build-cache key.
+vaadin/flow#25387 is exactly that: a build-cache key bug that is invisible
+with the configuration cache off.
+
+So cold mode runs the **same scenario set twice** — `--cc=off`, then
+`--cc=on` — and each pass re-wipes the shared build cache so both start
+cold. The CC pass adds one assertion per scenario about the fate of
+Gradle's *entry*, plus one CC-only scenario:
+
+| Scenario | Entry must be | Why |
+|---|---|---|
+| A (both builds) | `STORED` | `clean build …` and `build …` request different task sets, and the requested task set is part of an entry's identity |
+| I | `REUSED` | the #25387 guard: nothing changed, so nothing may invalidate |
+| B, C, D, E, F, G | `REUSED` | the uniform invariant — no ordinary source, resource or frontend edit may invalidate the entry. Each also wipes `build/` first, so this doubles as "deleting outputs must not invalidate it either" |
+| R (both builds) | `STORED` | the relocated copy excludes `./.gradle`, so it starts with no entry |
+| **CC-FRESH** | `STORED` then `REUSED` | CC pass only: no `src/main/frontend` (as on a real checkout), build, build again |
+| H | `STORED` | `--init-script` plus a new `-P` property change the build logic, so a fresh entry is correct |
+
+Scenario **H runs last in the CC pass** (in its normal position when the
+configuration cache is off). On a plugin carrying the
+`classFinderClasspath` serialization defect it fails the *build*, not just
+an assertion, and under `set -e` that would abort the pass before R and
+CC-FRESH ever report — a known-red scenario must not mask the ones behind
+it.
+
+A configuration-time input therefore reads as a **red CC pass against a
+green CC-off pass**, and Gradle names the offending path itself. That
+contrast is the diagnosis.
+
+**CC-FRESH** is the fresh-checkout guard. `.gitignore` ignores
+`**/src/main/frontend/` entirely, so on a real checkout that directory does
+not exist and the first build creates it. A plugin that probes it while
+configuring the task graph makes the *next* build invalidate with
+`the file system entry '…/src/main/frontend' has been created` — a
+permanent "reconfigure every second build" tax on exactly the path CI and
+every new developer hits.
+
+Entries live in the **build root's** `.gradle/configuration-cache` (for
+`multimodule-jar` that is `multimodule-jar/.gradle/`, not `web/.gradle/`),
+survive `build/` being wiped, and coexist per requested task set. The
+runner's `cc_reset` removes them where a scenario's premise is a freshly
+stored entry (A, I and CC-FRESH); every other scenario deliberately
+inherits the previous one's entry, because inheriting is what makes "an
+ordinary edit must not invalidate it" testable.
+
+A project whose plugin stack cannot build under the configuration cache
+sets `CC_COMPATIBLE=0` in its `case` branch, which skips the CC pass for it
+— a CC-hostile plugin produces failures about *itself*, and Gradle's
+graceful degradation (`Configuration cache disabled …`, build succeeds with
+no entry) would otherwise leave the assertions measuring nothing. All seven
+projects are currently compatible, including `shaded-jar` (Shadow 8.3.5)
+and `spring-boot-jar` (`io.spring.dependency-management`). To re-probe after
+a plugin bump, run any project's build twice and read the last two lines:
+
+```bash
+cd plain-jar
+for i in 1 2; do
+  ./gradlew build sourcesJar javadocJar --build-cache --console=plain --no-daemon \
+    --configuration-cache --configuration-cache-problems=fail \
+    -Pvaadin.productionMode -PflowVersion="$FLOW_VERSION"
+done
+```
+
+`stored.` then `reused.` means compatible. `Configuration cache disabled …`
+means it is not. Problems attributed to Shadow or dependency-management
+mean `CC_COMPATIBLE=0`; problems attributed to `com.vaadin.flow` are a
+**finding**, not a reason to disable the project.
+
+`scripts/assert-cc.sh` parses the entry's fate out of a build log and can be
+run standalone against a log downloaded from a failed CI run:
+
+```bash
+bash scripts/assert-cc.sh multimodule-jar/scenario-i-2.log REUSED
+bash scripts/assert-cc.sh multimodule-jar/scenario-i-2.log NOT_REUSED "lib/build/libs/lib.jar"
+```
 
 In **warm** cache mode (the default) the suite skips the cold scenarios
 and instead
@@ -166,8 +242,14 @@ unzip -l build/libs/plain-jar.jar | grep META-INF/VAADIN/webapp/
 Or run the scripted scenarios. The runner has two cache modes:
 
 ```bash
-# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A–I + R.
+# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A–I + R,
+# once with the configuration cache off and once with it on (plus CC-FRESH).
 bash scripts/run-project.sh --cache=cold plain-jar "$FLOW_VERSION"
+
+# Just one pass — --cc=off is the historical build-cache-only run,
+# --cc=on is the quick way to iterate on a configuration-cache bug.
+bash scripts/run-project.sh --cache=cold --cc=off plain-jar "$FLOW_VERSION"
+bash scripts/run-project.sh --cache=cold --cc=on  plain-jar "$FLOW_VERSION"
 
 # Warm mode (default): leave the cache alone and assert that a
 # clean build hits it. Requires the cache to be populated already.
@@ -313,22 +395,37 @@ The workflow has three job groups:
 1. **`build-flow`** — checks out the requested Flow ref and installs
    the Gradle plugin to `~/.m2/repository`, then uploads those
    artifacts. Skipped when `flow_version` is set.
-2. **`scenarios-cold`** — matrix over all 7 projects. When building
-   from source, each job downloads the Flow artifacts into mavenLocal;
-   with `flow_version` set it skips that and lets Gradle resolve the
-   published Flow. Each job runs
-   `scripts/run-project.sh --cache=cold` (scenarios A–I plus the
-   relocatability guard R) and persists the resulting
-   `~/.gradle/caches/build-cache-1` under a run-scoped Actions cache
-   key (discriminated by the built Flow SHA, or the published version).
+2. **`scenarios-cold`** — matrix over all 7 projects **× `cc: [off, on]`**,
+   so 14 jobs. When building from source, each job downloads the Flow
+   artifacts into mavenLocal; with `flow_version` set it skips that and
+   lets Gradle resolve the published Flow. Each job runs
+   `scripts/run-project.sh --cache=cold --cc=<leg>` (scenarios A–I plus
+   the relocatability guard R, plus CC-FRESH on the `on` leg). Running the
+   two passes as a matrix axis rather than sequentially keeps wall-clock
+   unchanged, and a red `cc-on` leg against a green `cc-off` leg is the
+   signature of a configuration-time input.
+
+   Only the **`cc: off`** leg persists `~/.gradle/caches/build-cache-1`
+   to the run-scoped Actions cache key. Both legs populate an equivalent
+   cache, but the key is deliberately not scoped by `matrix.cc` — the warm
+   job restores one key and must not have to pick a leg, and since Actions
+   cache writes are write-once, letting both legs write would be a race
+   whose winner decides what warm restores. A side benefit: a
+   configuration-cache regression cannot starve the warm job.
 3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 7
    projects. Each job restores the matching cold job's cache on a
    fresh runner and runs `scripts/run-project.sh --cache=warm`. A
    cache miss is a hard failure (`fail-on-cache-miss: true`) because
-   the assertion is meaningless without a real restoration.
+   the assertion is meaningless without a real restoration. Warm mode
+   also runs one `--configuration-cache` build — the combination cold
+   mode cannot reproduce, since a fresh runner has a populated build
+   cache but no CC entry (entries live in the project's `.gradle/` and
+   are never persisted across jobs).
 
-Failed runs upload `cold-<project>-logs` / `warm-<project>-logs`
-artifacts containing the Gradle logs.
+Failed runs upload `cold-<project>-cc<off|on>-logs` /
+`warm-<project>-logs` artifacts containing the Gradle logs **and** any
+`configuration-cache-report.html` — the report names every CC problem and
+the code that caused it, and is not a `*.log`, so it needs its own path.
 
 ### Published-artifact workflow
 
@@ -365,7 +462,8 @@ the workflow is not exercising what we think it is.
 │   ├── run-suite.sh
 │   ├── run-project.sh
 │   ├── resolve-flow-version.sh        # Vaadin version -> Flow version
-│   └── assert-task-outcome.sh
+│   ├── assert-task-outcome.sh
+│   └── assert-cc.sh
 ├── plain-jar/                         # source-mode projects (com.vaadin.flow)
 ├── war/
 ├── spring-boot-jar/

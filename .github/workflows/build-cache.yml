@@ -118,8 +118,9 @@ jobs:
           if-no-files-found: error
 
   scenarios-cold:
-    name: cold / ${{ matrix.project }}
+    name: cold / ${{ matrix.project }} / cc-${{ matrix.cc }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: build-flow
     # Run after a successful build, or directly when a published
     # flow_version was given (build-flow is then skipped).
@@ -135,6 +136,13 @@ jobs:
           - custom-jar-task
           - custom-frontend-output
           - multimodule-jar
+        # The configuration cache is a mode, not a separate feature: it changes
+        # when a task's inputs are computed and therefore what lands in its
+        # build-cache key. Both legs run the same scenarios; the contrast
+        # between them is the diagnosis (vaadin/flow#25387 is red under cc-on
+        # and green under cc-off). Running them as an axis rather than
+        # sequentially keeps wall-clock unchanged.
+        cc: [off, on]
 
     steps:
       - name: Checkout test-projects
@@ -183,7 +191,7 @@ jobs:
       - name: Run cold scenarios
         env:
           FLOW_VERSION: ${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-version }}
-        run: bash scripts/run-project.sh --cache=cold "${{ matrix.project }}" "${FLOW_VERSION}"
+        run: bash scripts/run-project.sh --cache=cold --cc=${{ matrix.cc }} "${{ matrix.project }}" "${FLOW_VERSION}"
 
       # Persist the populated local build-cache under a run-scoped key so
       # the matching warm job can restore it on a fresh runner. The key is
@@ -191,24 +199,38 @@ jobs:
       # write-once, and including run_attempt lets "Re-run all jobs" write a
       # fresh cache rather than no-op against the prior attempt. The Flow
       # discriminator is the built SHA, or the published version.
+      #
+      # Only the cc-off leg saves. Both legs populate an equivalent cache, but
+      # the key is deliberately NOT scoped by matrix.cc: the warm job restores
+      # one key and must not have to pick a leg. Since Actions cache writes are
+      # write-once, letting both legs write would be a race whose winner
+      # decides what warm restores — so one designated writer it is.
       - name: Save Gradle local build-cache
-        if: success()
+        if: ${{ success() && matrix.cc == 'off' }}
         uses: actions/cache/save@v5
         with:
           path: ~/.gradle/caches/build-cache-1
           key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
+      # The configuration-cache HTML report is the single most useful CC
+      # diagnostic (it names every problem and the code that caused it) and is
+      # not a *.log, so it needs its own path. The **/build/ prefix covers
+      # multimodule-jar, where the report lands in the build root rather than
+      # the Vaadin module.
       - name: Upload gradle logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cold-${{ matrix.project }}-logs
-          path: ${{ matrix.project }}/*.log
+          name: cold-${{ matrix.project }}-cc${{ matrix.cc }}-logs
+          path: |
+            ${{ matrix.project }}/*.log
+            ${{ matrix.project }}/**/build/reports/configuration-cache/**
           if-no-files-found: ignore
 
   scenarios-warm:
     name: warm / ${{ matrix.project }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [build-flow, scenarios-cold]
     # Run as long as build-flow succeeded (or a published flow_version was
     # given, so build-flow is skipped), even when some cold matrix entries
@@ -218,6 +240,10 @@ jobs:
     # written for failed cold runs, and the warm restore here has
     # fail-on-cache-miss: true). That's a more useful signal than skipping
     # the entire warm matrix.
+    #
+    # Only the cold cc-off leg writes that cache, so a cc-on failure does not
+    # starve the warm job — which is what we want: a configuration-cache
+    # regression should not also mask the plain build-cache warm assertion.
     if: ${{ !cancelled() && (needs.build-flow.result == 'success' || github.event.inputs.flow_version != '') }}
     strategy:
       fail-fast: false
@@ -288,5 +314,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: warm-${{ matrix.project }}-logs
-          path: ${{ matrix.project }}/*.log
+          path: |
+            ${{ matrix.project }}/*.log
+            ${{ matrix.project }}/**/build/reports/configuration-cache/**
           if-no-files-found: ignore

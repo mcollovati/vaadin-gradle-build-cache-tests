@@ -31,7 +31,7 @@ vite.generated.ts
 # root-level source-mode projects.
 **/scenario-*.log
 **/build.log
-**/warm.log
+**/warm*.log
 
 # --- IDEs ----------------------------------------------------------
 .idea/

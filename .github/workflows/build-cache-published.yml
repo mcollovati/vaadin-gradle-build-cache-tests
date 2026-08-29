@@ -76,8 +76,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   scenarios-cold:
-    name: cold / ${{ matrix.project }}
+    name: cold / ${{ matrix.project }} / cc-${{ matrix.cc }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: resolve-version
     strategy:
       fail-fast: false
@@ -90,6 +91,12 @@ jobs:
           - custom-jar-task
           - custom-frontend-output
           - multimodule-jar
+        # The configuration cache is a mode, not a separate feature: it changes
+        # when a task's inputs are computed and therefore what lands in its
+        # build-cache key. Both legs run the same scenarios; the contrast
+        # between them is the diagnosis (vaadin/flow#25387 is red under cc-on
+        # and green under cc-off).
+        cc: [off, on]
 
     steps:
       - name: Checkout test-projects
@@ -124,14 +131,20 @@ jobs:
         env:
           VAADIN_VERSION: ${{ needs.resolve-version.outputs.vaadin-version }}
           FLOW_VERSION: ${{ needs.resolve-version.outputs.flow-version }}
-        run: bash scripts/run-project.sh --cache=cold --vaadin-platform --flow-version="${FLOW_VERSION}" "${{ matrix.project }}" "${VAADIN_VERSION}"
+        run: bash scripts/run-project.sh --cache=cold --vaadin-platform --cc=${{ matrix.cc }} --flow-version="${FLOW_VERSION}" "${{ matrix.project }}" "${VAADIN_VERSION}"
 
       # Persist the populated local build-cache under a run-scoped key so the
       # matching warm job can restore it on a fresh runner. The key is unique
       # per (run_id, run_attempt) — Actions cache writes are write-once, and
       # including run_attempt lets "Re-run all jobs" write a fresh cache.
+      #
+      # Only the cc-off leg saves. Both legs populate an equivalent cache, but
+      # the key is deliberately NOT scoped by matrix.cc: the warm job restores
+      # one key and must not have to pick a leg. Actions cache writes are
+      # write-once, so letting both legs write would be a race whose winner
+      # decides what warm restores.
       - name: Save Gradle local build-cache
-        if: success()
+        if: ${{ success() && matrix.cc == 'off' }}
         uses: actions/cache/save@v5
         with:
           path: ~/.gradle/caches/build-cache-1
@@ -141,13 +154,16 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cold-${{ matrix.project }}-logs
-          path: platform/${{ matrix.project }}/*.log
+          name: cold-${{ matrix.project }}-cc${{ matrix.cc }}-logs
+          path: |
+            platform/${{ matrix.project }}/*.log
+            platform/${{ matrix.project }}/**/build/reports/configuration-cache/**
           if-no-files-found: ignore
 
   scenarios-warm:
     name: warm / ${{ matrix.project }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [resolve-version, scenarios-cold]
     # Run as long as resolve-version succeeded, even when some cold matrix
     # entries failed. The matching warm entries whose cold counterpart failed
@@ -210,5 +226,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: warm-${{ matrix.project }}-logs
-          path: platform/${{ matrix.project }}/*.log
+          path: |
+            platform/${{ matrix.project }}/*.log
+            platform/${{ matrix.project }}/**/build/reports/configuration-cache/**
           if-no-files-found: ignore
