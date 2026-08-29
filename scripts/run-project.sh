@@ -154,6 +154,10 @@ success_banner() {
   printf '%s%s%s\n\n'   "${C_BOLD}${C_GREEN}" "$rule" "$C_RESET"
 }
 
+# Non-fatal note. Used where an assertion is deliberately downgraded
+# because the cause is known and provably not the Flow plugin's.
+warn() { printf '%sWARN%s %s\n' "$C_YELLOW$C_BOLD" "$C_RESET" "$1"; }
+
 # Print the failing line and command before the shell exits via `set -e`.
 # Makes silent exits (e.g. a substitution returning non-zero under
 # pipefail) immediately diagnosable.
@@ -402,6 +406,14 @@ AUX_TASKS=(sourcesJar javadocJar)  # sources/javadoc tasks built alongside
 # entry), which would leave every CC assertion measuring nothing. Probe before
 # flipping it — see the recipe in README's "Configuration cache" section.
 CC_COMPATIBLE=1                    # run the configuration-cache pass
+# A configuration-cache invalidation reason that is *known* not to be the
+# Flow plugin's doing, and must therefore not fail assert_cc_reused. Empty
+# for every project but spring-boot-jar; see the comment on its case branch.
+# It is a substring of Gradle's "Calculating task graph as configuration
+# cache cannot be reused because ..." line, so it is narrow: any other
+# invalidation — a moved cache key, a probed frontend dir, a sibling jar —
+# still fails.
+CC_REUSE_EXEMPT=""
 case "$project" in
   plain-jar)
     BUILD_TASK="build"
@@ -429,6 +441,23 @@ case "$project" in
     BUNDLE_PREFIX=""
     SOURCES_JAR="build/libs/spring-boot-jar-sources.jar"
     JAVADOC_JAR="build/libs/spring-boot-jar-javadoc.jar"
+    # The Spring Boot plugin probes build/classes/java/main while
+    # *configuring* bootJar and records the probe as a configuration-cache
+    # input, so the entry is invalidated by the build's own side effect:
+    # "the file system entry 'build/classes/java/main' has been created"
+    # on the build after a wiped build/, "... has been removed" on the
+    # build after scenario_begin wipes it again. Since every cold-mode
+    # scenario starts by wiping build/, the flip repeats for the whole CC
+    # pass and no scenario would ever see a reused entry.
+    #
+    # Measured against Spring Boot 4.0.5 with the Vaadin plugin *removed*
+    # (2026-08-29): plain java + org.springframework.boot reproduces it,
+    # and only when bootJar is in the requested task set — `classes`,
+    # `jar`, `sourcesJar javadocJar` all reuse the entry although
+    # compileJava creates the same directory. So the directory being
+    # created is not the trigger; configuring bootJar is. Not the Flow
+    # plugin, and bounded upstream (a third identical build reuses).
+    CC_REUSE_EXEMPT="build/classes/java/main"
     ;;
   shaded-jar)
     BUILD_TASK="shadowJar"
@@ -609,7 +638,23 @@ assert_outcome() {
 cc_on() { [[ "$CC_PASS" == "on" ]]; }
 
 assert_cc_stored()      { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" STORED; }
-assert_cc_reused()      { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" REUSED; }
+# REUSED, unless the entry was invalidated for this project's exempt reason
+# (CC_REUSE_EXEMPT). The exemption is checked first and quietly: assert-cc.sh
+# NOT_REUSED with a reason substring succeeds only when the entry really was
+# not reused *and* Gradle's stated reason matches, so an entry that was reused
+# falls through to the REUSED assertion below and still passes. Anything
+# invalidated for any other reason fails as before.
+assert_cc_reused() {
+  local log=$1
+  cc_on || return 0
+  if [[ -n "$CC_REUSE_EXEMPT" ]] &&
+     bash "${script_dir}/assert-cc.sh" "$log" NOT_REUSED "$CC_REUSE_EXEMPT" \
+       >/dev/null 2>&1; then
+    warn "configuration cache entry not reused, exempt: ${CC_REUSE_EXEMPT} (not the Flow plugin)"
+    return 0
+  fi
+  bash "${script_dir}/assert-cc.sh" "$log" REUSED
+}
 assert_cc_no_problems() { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" NO_PROBLEMS; }
 
 # Unused by the scenarios below: it exists for the inverse investigation —
@@ -1310,7 +1355,25 @@ if cc_on; then
   capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 
   run_gradle scenario-cc-fresh-2.log "$BUILD_TASK" "${AUX_TASKS[@]}"
-  assert_cc_reused scenario-cc-fresh-2.log
+  # Not assert_cc_reused: on a project with a CC_REUSE_EXEMPT this scenario
+  # cannot measure its own invariant. Gradle prints exactly ONE invalidation
+  # reason, and the exempt one wins here — measured on spring-boot-jar
+  # (2026-08-29), build 2 reports "the file system entry
+  # 'build/classes/java/main' has been created" and never mentions
+  # src/main/frontend, although build 1's configuration-cache report lists
+  # BOTH probes as inputs (./src/main/frontend, ./src/main/frontend/index.ts,
+  # build/classes/java/main). Letting the exemption swallow it would turn a
+  # measurement that cannot be made into a green scenario. The other projects
+  # carry this guard; here we say so out loud.
+  #
+  # Materializing build/ first to stabilise the exempt probe does NOT work:
+  # with build/ intact :vaadinBuildFrontend is UP-TO-DATE, so nothing recreates
+  # src/main/frontend and the reuse is vacuous. The wiped build/ is the premise.
+  if [[ -n "$CC_REUSE_EXEMPT" ]]; then
+    warn "CC-FRESH inconclusive here: the exempt reason (${CC_REUSE_EXEMPT}) masks the frontend probe in Gradle's one-reason report"
+  else
+    assert_cc_reused scenario-cc-fresh-2.log
+  fi
   assert_outcome scenario-cc-fresh-2.log "$VBF_TASK" UP-TO-DATE
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
   assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"

@@ -260,6 +260,35 @@ means it is not. Problems attributed to Shadow or dependency-management
 mean `CC_COMPATIBLE=0`; problems attributed to `com.vaadin.flow` are a
 **finding**, not a reason to disable the project.
 
+The same distinction has a narrower knob. `CC_REUSE_EXEMPT` names one
+invalidation reason a project is allowed to hit without failing
+`assert_cc_reused`: the assertion accepts a not-reused entry whose reason
+contains that substring, prints `WARN … (not the Flow plugin)`, and fails
+on every other reason exactly as before. Only `spring-boot-jar` sets it, to
+`build/classes/java/main`. The Spring Boot plugin probes that directory
+while *configuring* `bootJar`, so the entry is invalidated by the build's
+own side effect — `has been created` on the build after a wiped `build/`,
+`has been removed` after `scenario_begin` wipes it again. Since every
+cold-mode scenario begins by wiping `build/`, that flip repeats for the
+whole pass and no scenario would ever see a reused entry. It is the same
+shape as the `src/main/frontend` probe above with a different owner:
+deleting `id 'com.vaadin.flow'` from the project reproduces it (Spring Boot
+4.0.5, measured 2026-08-29), and only when `bootJar` is in the requested
+task set — `classes`, `jar` and `sourcesJar javadocJar` all reuse the entry
+although `compileJava` creates the very same directory. Upstream the cost is
+bounded: the third identical build reuses.
+
+One scenario deliberately refuses the exemption: **CC-FRESH**. Gradle prints
+exactly one invalidation reason, and on `spring-boot-jar` the Boot one wins
+even though build 1's configuration-cache report lists the Flow probes
+(`./src/main/frontend`, `./src/main/frontend/index.ts`) as inputs as well —
+so the exemption would convert a measurement that cannot be made into a green
+scenario. It prints `WARN CC-FRESH inconclusive here …` instead, and the other
+six projects carry that guard. Materialising `build/` first to stabilise the
+Boot probe is not a way out: with `build/` intact `:vaadinBuildFrontend` is
+UP-TO-DATE, nothing recreates `src/main/frontend`, and the reuse is vacuous —
+the wiped `build/` is the scenario's premise.
+
 `scripts/assert-cc.sh` parses the entry's fate out of a build log and can be
 run standalone against a log downloaded from a failed CI run:
 

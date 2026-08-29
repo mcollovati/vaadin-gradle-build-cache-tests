@@ -25,7 +25,10 @@ configuration cache is an execution mode that changes *when* task inputs
 are computed and therefore what lands in the build-cache key, so the CC
 pass re-runs the same scenarios, adds an assertion about the fate of
 Gradle's entry, and appends two CC-only scenarios (S and CC-FRESH).
-Per-project opt-out via `CC_COMPATIBLE=0`.
+Per-project opt-out via `CC_COMPATIBLE=0`; `CC_REUSE_EXEMPT` is the
+narrower knob, naming one invalidation reason a project may hit without
+failing `assert_cc_reused` (only `spring-boot-jar` sets it; CC-FRESH
+refuses the exemption and reports itself inconclusive instead).
 `scripts/run-suite.sh` is a thin wrapper that runs
 `run-project.sh` over every subproject (canonical list in its
 `ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
@@ -381,7 +384,11 @@ what we think.
    if the project's plugin stack cannot build under `--configuration-cache`,
    with a comment naming the offending plugin (probe first — see README's
    "Configuration cache" section; all seven current projects are
-   compatible). `BUNDLE_PREFIX`
+   compatible). `CC_REUSE_EXEMPT` defaults to `""`; set it only for a
+   project whose plugin stack invalidates the CC entry for a reason
+   provably not the Flow plugin's, with the measurement that proves it
+   (`spring-boot-jar` is the only one — see README's "Configuration
+   cache" section). `BUNDLE_PREFIX`
    is the prefix inside the archive where the Flow plugin stages the
    bundle (`""` for jars, `WEB-INF/classes/` for wars). Spring Boot
    `bootJar` also uses `""`: since Flow PR #25001 (25.3.0-alpha4) the
