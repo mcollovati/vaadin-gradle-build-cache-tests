@@ -20,8 +20,9 @@ behaviour going forward.
 | `shaded-jar`             | `java`, `com.vaadin.flow`, `com.gradleup.shadow`           | `shadowJar`  | `*-all.jar` (bundle at root)             | Bundle **in** main archive; sources/javadoc jars **clean** |
 | `custom-jar-task`        | `java`, `com.vaadin.flow` + a user-defined `Jar` task      | `customJar`  | `custom-jar.jar` (bundle at root)        | Bundle **in** main archive; sources/javadoc jars **clean** |
 | `custom-frontend-output` | `java`, `application`, `com.vaadin.flow` + custom `vaadin.frontendOutputDirectory` | `build`      | `*.jar` (bundle at root)                 | Bundle **in** main archive; sources/javadoc jars **clean** |
+| `multimodule-jar`        | two modules: `:lib` (`java`) and `:web` (`java`, `application`, `com.vaadin.flow`, `implementation project(':lib')`) | `:web:build` | `web/*.jar` (bundle at root)             | Bundle **in** main archive; sources/javadoc jars **clean** |
 
-All six projects exercise the same cache scenarios and the same
+All seven projects exercise the same cache scenarios and the same
 archive-content expectation: a Flow application archive must contain
 the production frontend bundle under `META-INF/VAADIN/webapp/`.
 `shaded-jar` and `custom-jar-task` cover archive-task shapes that the
@@ -30,8 +31,16 @@ user-defined `Jar` subtype). `custom-frontend-output` mirrors
 `plain-jar` but overrides the plugin's `frontendOutputDirectory` —
 declared `@Input` on both `vaadinPrepareFrontend` and
 `vaadinBuildFrontend`, so a regression in its cache wiring or
-jar-packaging path resolution would surface here. A failure on these
-projects is a plugin regression, not an expected outcome.
+jar-packaging path resolution would surface here. `multimodule-jar` is
+the only multi-module project: its Vaadin module depends on a sibling
+module, so `:web:vaadinBuildFrontend` has a jar built by *another task in
+the same build* on its runtime classpath. That is the shape behind
+[vaadin/flow#25387](https://github.com/vaadin/flow/issues/25387) — on the
+cold build that jar does not exist yet when the task's inputs are
+snapshotted, so a dependency-jar fingerprint computed without the file
+collection's task dependencies changes between two identical builds.
+Scenario I is the guard. A failure on these projects is a plugin
+regression, not an expected outcome.
 
 Every project also publishes a `-sources.jar` and a `-javadoc.jar` via
 `java { withSourcesJar(); withJavadocJar() }`. The runner asserts those
@@ -51,11 +60,12 @@ not just the task outcome: cache hits must keep the scenario-A baseline
 stage the expected module). That catches a false cache hit that serves a
 *stale* bundle — something an outcome-only check is blind to.
 
-Cache-**hit** guards (must come `FROM-CACHE`, bundle unchanged):
+Cache-**hit** guards (the task must not re-execute; bundle unchanged):
 
 | # | Scenario              | Why it must still hit |
 |---|-----------------------|-----------------------|
 | A | Cold-cache restore: build → `rm -rf build/` → build | `SUCCESS` then `FROM-CACHE` — populates the baseline |
+| I | Two identical consecutive builds                     | `UP-TO-DATE` on the second — identical inputs must produce an identical key twice |
 | B | Add a test class (not a `vaadinBuildFrontend` input) | test sources don't affect the bundle |
 | C | Edit `src/main/resources/messages.properties`       | not a declared input |
 | E | Append a comment after the final `}` of the view    | byte-identical bytecode → normalized key still hits |
@@ -70,13 +80,40 @@ Cache-**miss** guards (must **not** come `FROM-CACHE`):
 | G | Edit `src/main/frontend/index.html`                 | the app-shell template is a frontend input |
 | H | Add a dependency jar carrying a `@Route` view with a `@JsModule` (a frontend add-on) | a dependency's frontend is a cache input, staged without any app source change |
 
-Scenarios D–H are the negative/positive-invalidation guards; E, B, C and
-R guard against an over-eager key that rebuilds (or fails to relocate)
-when nothing bundle-relevant changed. The add-on jar for H is the
+Scenarios D–H are the negative/positive-invalidation guards; E, B, C, I
+and R guard against an over-eager key that rebuilds (or fails to
+relocate) when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via
 `scripts/addon-init.gradle` (no project `build.gradle` edit).
 
-Scenario **R runs in cold mode by default**, alongside A–H. It builds a
+Scenario **I** is the only one that asserts `UP-TO-DATE` rather than
+`FROM-CACHE`. It runs two identical builds back to back: after the first,
+nothing changes, so the second must be `UP-TO-DATE`. A bare `SUCCESS`
+means the cache key moved between two builds of an unchanged tree;
+`FROM-CACHE` means Gradle discarded and restored outputs it should have
+recognised as current (how the bug reads once that second key is in the
+cache). It is load-bearing only for `multimodule-jar`, whose
+dependency-jar fingerprint contains a jar that does not exist yet when the
+task's inputs are first snapshotted
+([vaadin/flow#25387](https://github.com/vaadin/flow/issues/25387)).
+
+**Scenario I needs the configuration cache to catch that bug.** Measured
+against Vaadin 25.2.6 on this fixture: with `--configuration-cache` the
+second build re-executes and Gradle re-stores its entry, reporting
+`configuration cache cannot be reused because file 'lib/build/libs/lib.jar'
+has changed`; *without* it, the second build is plain `UP-TO-DATE` and the
+regression is invisible. So a project opts into the CC variant with
+`CC_SCENARIO=1` in its `case` branch — currently only `multimodule-jar`,
+which also asserts the entry was reused. The other six run the same two
+builds without CC, which is a cheap sanity check rather than a #25387
+guard, and keeps them clear of unrelated CC incompatibilities in the
+Shadow and Spring Boot plugins.
+
+Scenario R's second build asserts the same UP-TO-DATE invariant at the
+relocated path. It also runs without CC, so it is a general guard that a
+relocated consumer settles after one build — not a second #25387 guard.
+
+Scenario **R runs in cold mode by default**, alongside A–I. It builds a
 copy of the project at a fresh absolute path against the *same* shared
 cache and requires `:vaadinBuildFrontend` to come `FROM-CACHE` — the whole
 point of a shared cache being reuse across checkouts at different paths.
@@ -129,7 +166,7 @@ unzip -l build/libs/plain-jar.jar | grep META-INF/VAADIN/webapp/
 Or run the scripted scenarios. The runner has two cache modes:
 
 ```bash
-# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A–H + R.
+# Cold mode: wipe ~/.gradle/caches/build-cache-1 and run scenarios A–I + R.
 bash scripts/run-project.sh --cache=cold plain-jar "$FLOW_VERSION"
 
 # Warm mode (default): leave the cache alone and assert that a
@@ -143,7 +180,7 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 prints a per-project PASS/FAIL summary (exit non-zero if any failed):
 
 ```bash
-# Run the full cold scenario set (A–H + R) for every project. This is the complete
+# Run the full cold scenario set (A–I + R) for every project. This is the complete
 # local validation — each project's cold run primes and hits its own
 # cache within scenario A, so no separate warm phase is needed locally.
 bash scripts/run-suite.sh "$FLOW_VERSION"
@@ -161,7 +198,7 @@ cache is persisted and restored in isolation (see the workflow below).
 To reproduce the old two-loop behaviour by hand:
 
 ```bash
-for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output; do
+for p in plain-jar war spring-boot-jar shaded-jar custom-jar-task custom-frontend-output multimodule-jar; do
   bash scripts/run-project.sh --cache=cold "$p" "$FLOW_VERSION"
 done
 ```
@@ -231,7 +268,7 @@ key (`Appending … to build cache key` lines) followed by the final key.
 Diffing those lines between two builds pinpoints which input changed.
 
 ```bash
-# Cold suite (A–H plus R) with the key breakdown logged.
+# Cold suite (A–I plus R) with the key breakdown logged.
 bash scripts/run-project.sh --cache=cold --cache-debug plain-jar "$FLOW_VERSION"
 
 # Extract the :vaadinBuildFrontend block from the original build and the
@@ -276,15 +313,15 @@ The workflow has three job groups:
 1. **`build-flow`** — checks out the requested Flow ref and installs
    the Gradle plugin to `~/.m2/repository`, then uploads those
    artifacts. Skipped when `flow_version` is set.
-2. **`scenarios-cold`** — matrix over all 6 projects. When building
+2. **`scenarios-cold`** — matrix over all 7 projects. When building
    from source, each job downloads the Flow artifacts into mavenLocal;
    with `flow_version` set it skips that and lets Gradle resolve the
    published Flow. Each job runs
-   `scripts/run-project.sh --cache=cold` (scenarios A–H plus the
+   `scripts/run-project.sh --cache=cold` (scenarios A–I plus the
    relocatability guard R) and persists the resulting
    `~/.gradle/caches/build-cache-1` under a run-scoped Actions cache
    key (discriminated by the built Flow SHA, or the published version).
-3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 6
+3. **`scenarios-warm`** — `needs: scenarios-cold`, matrix over all 7
    projects. Each job restores the matching cold job's cache on a
    fresh runner and runs `scripts/run-project.sh --cache=warm`. A
    cache miss is a hard failure (`fail-on-cache-miss: true`) because
@@ -335,11 +372,14 @@ the workflow is not exercising what we think it is.
 ├── shaded-jar/
 ├── custom-jar-task/
 ├── custom-frontend-output/
+├── multimodule-jar/                   # the one multi-module project (:lib + :web)
 └── platform/                          # published-mode mirrors (com.vaadin)
     ├── plain-jar/                     #   build.gradle + settings.gradle,
     ├── war/                           #   with src/ and the wrapper symlinked
     ├── spring-boot-jar/               #   back to the root project
     ├── shaded-jar/
     ├── custom-jar-task/
-    └── custom-frontend-output/
+    ├── custom-frontend-output/
+    └── multimodule-jar/               #   two modules, each with
+                                       #   its own src/ symlink
 ```

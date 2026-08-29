@@ -1,0 +1,20 @@
+// Published-artifact counterpart of ../../../multimodule-jar/lib. No Vaadin
+// dependency at all, so it is identical to the source-mode module except
+// for dropping mavenLocal() from the repositories.
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}

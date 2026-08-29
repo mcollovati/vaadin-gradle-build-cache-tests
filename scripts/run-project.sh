@@ -34,7 +34,7 @@
 #   --cache=cold         Wipe the local Gradle build cache
 #                        ($GRADLE_USER_HOME/caches/build-cache-1 — defaults
 #                        to ~/.gradle/caches/build-cache-1) before running,
-#                        then run scenarios A/B/C/D. Use this to guarantee
+#                        then run scenarios A–I plus R. Use this to guarantee
 #                        a cold start when validating cache-population
 #                        behaviour.
 #   --cache=warm         Default. Do NOT touch the local Gradle build cache.
@@ -56,12 +56,16 @@
 # so a false cache hit serving a stale bundle is caught, not just a
 # wrong task outcome.
 #
-# Cache-hit guards (FROM-CACHE, bundle unchanged vs the scenario-A baseline):
-#   A) Cold-cache restore:  build -> rm -rf build/ -> build
-#   B) Add test class:      non-input source added
-#   C) Edit resource:       messages.properties (not a declared input)
-#   E) Comment-only Java:   trailing comment -> byte-identical bytecode
-#   R) Relocatability:      build a copy at a different absolute path
+# Cache-hit guards (bundle unchanged vs the scenario-A baseline):
+#   A) Cold-cache restore:  build -> rm -rf build/ -> build   (FROM-CACHE)
+#   I) Repeat build:        two identical builds in a row     (UP-TO-DATE
+#                           on the 2nd; under --configuration-cache where
+#                           the project sets CC_SCENARIO=1)
+#   B) Add test class:      non-input source added            (FROM-CACHE)
+#   C) Edit resource:       messages.properties, not an input (FROM-CACHE)
+#   E) Comment-only Java:   trailing comment, same bytecode   (FROM-CACHE)
+#   R) Relocatability:      copy at a different absolute path (FROM-CACHE,
+#                           then UP-TO-DATE on its repeat build)
 # Cache-miss guards (NOT FROM-CACHE):
 #   D) Modify @Route Java:  main-classpath bytecode changes (bundle same)
 #   F) Add @JsModule:       project frontend module (bundle changes)
@@ -143,7 +147,7 @@ scenario_mark=0
 scenario_begin() {
   section "$1"
   scenario_mark=${#pending_cleanups[@]}
-  rm -rf build/
+  rm -rf "${BUILD_DIRS[@]}"
   # Remove Flow's packaged application bundle before every scenario.
   # Flow *reuses* an existing src/main/bundles/prod.bundle when it deems
   # the frontend compatible, so a bundle compiled by an earlier scenario
@@ -153,7 +157,7 @@ scenario_begin() {
   # executes vaadinBuildFrontend compiles a bundle reflecting the current
   # sources. It is NOT a Gradle cache input, so FROM-CACHE scenarios are
   # unaffected (the task is restored from Gradle's cache, not recompiled).
-  rm -rf src/main/bundles src/main/dev-bundle
+  rm -rf "${MODULE_DIR}src/main/bundles" "${MODULE_DIR}src/main/dev-bundle"
 }
 
 scenario_end() {
@@ -300,6 +304,18 @@ fi
 cd "$project_dir"
 
 # Per-project parameters.
+#
+# The defaults describe a single-module project: sources at the project
+# root, one build/ directory, the Vaadin task at the root of the build.
+# multimodule-jar overrides all four — its Vaadin module is the :web
+# subproject — which is why the scenarios below address source paths
+# through $MODULE_DIR and the task through $VBF_TASK instead of
+# hardcoding them.
+MODULE_DIR=""                      # path prefix (trailing /) of the Vaadin module
+VBF_TASK=":vaadinBuildFrontend"    # task path the scenarios assert on
+BUILD_DIRS=(build)                 # build dirs wiped between scenarios
+AUX_TASKS=(sourcesJar javadocJar)  # sources/javadoc tasks built alongside
+CC_SCENARIO=0                      # run scenario I under --configuration-cache
 case "$project" in
   plain-jar)
     BUILD_TASK="build"
@@ -353,6 +369,30 @@ case "$project" in
     BUNDLE_PREFIX=""
     SOURCES_JAR="build/libs/custom-frontend-output-sources.jar"
     JAVADOC_JAR="build/libs/custom-frontend-output-javadoc.jar"
+    ;;
+  multimodule-jar)
+    # The only multi-module project: :lib (plain java) + :web (Vaadin,
+    # depending on :lib). Everything the scenarios touch lives under web/,
+    # and the task under test is :web:vaadinBuildFrontend. Both modules'
+    # build dirs are wiped between scenarios so lib.jar is as absent at the
+    # start of each scenario as it is in a fresh checkout — the state that
+    # exposes vaadin/flow#25387 (see scenario I).
+    MODULE_DIR="web/"
+    VBF_TASK=":web:vaadinBuildFrontend"
+    BUILD_DIRS=(build lib/build web/build)
+    AUX_TASKS=(:web:sourcesJar :web:javadocJar)
+    BUILD_TASK=":web:build"
+    ARCHIVE_GLOB="web/build/libs/web.jar"
+    BUNDLE_PREFIX=""
+    SOURCES_JAR="web/build/libs/web-sources.jar"
+    JAVADOC_JAR="web/build/libs/web-javadoc.jar"
+    # vaadin/flow#25387 only manifests under Gradle's configuration cache
+    # (verified against Vaadin 25.2.6: without it the repeat build is
+    # UP-TO-DATE even on the broken plugin), so scenario I runs its two
+    # builds with --configuration-cache here. Scoped to this project so the
+    # other six are not exposed to unrelated configuration-cache
+    # incompatibilities in their plugin stacks (Shadow, Spring Boot).
+    CC_SCENARIO=1
     ;;
   *)
     echo "run-project: unknown project '${project}'" >&2
@@ -450,6 +490,25 @@ assert_archive_lacks_vaadin_staging() {
 
 assert_outcome() {
   bash "${script_dir}/assert-task-outcome.sh" "$@"
+}
+
+# Assert Gradle *reused* its configuration-cache entry instead of storing a
+# fresh one. On a repeat build with nothing changed, "Configuration cache
+# entry stored." means the previous entry was invalidated — and Gradle names
+# the input that did it ("... cannot be reused because file X has changed"),
+# which is a sharper diagnostic than the task outcome alone. Used by
+# scenario I, where the invalidating file is the sibling module's jar.
+assert_cc_reused() {
+  local log=$1
+  if grep -qF "Configuration cache entry reused." "$log"; then
+    printf '%sOK  %s configuration cache entry reused\n' "$C_GREEN$C_BOLD" "$C_RESET"
+    return 0
+  fi
+  printf '%sFAIL%s configuration cache entry was not reused on an unchanged build\n' \
+    "$C_RED$C_BOLD" "$C_RESET" >&2
+  grep -E "configuration cache cannot be reused|Configuration cache entry" "$log" >&2 || \
+    printf '       (no configuration-cache lines in %s)\n' "$log" >&2
+  return 1
 }
 
 #---------------------------------------------------------------------
@@ -562,14 +621,14 @@ build_addon_jar() {
 }
 
 #---------------------------------------------------------------------
-# Warm-cache mode: skip A/B/C/D, run only the FROM-CACHE assertion.
+# Warm-cache mode: skip the cold scenarios, run only the FROM-CACHE assertion.
 # Mirrors what happens when a fresh CI runner restores a build-cache
 # from Actions cache storage and is then asked to build.
 #---------------------------------------------------------------------
 if [[ "$CACHE_MODE" == "warm" ]]; then
   section "${project}: warm-cache assertion"
-  run_gradle warm.log clean "$BUILD_TASK" sourcesJar javadocJar
-  assert_outcome warm.log ":vaadinBuildFrontend" FROM-CACHE
+  run_gradle warm.log clean "$BUILD_TASK" "${AUX_TASKS[@]}"
+  assert_outcome warm.log "$VBF_TASK" FROM-CACHE
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
   assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
   assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
@@ -578,14 +637,16 @@ if [[ "$CACHE_MODE" == "warm" ]]; then
 fi
 
 #---------------------------------------------------------------------
-# Cold-cache mode: scenarios A–H plus R — uniform across all projects.
+# Cold-cache mode: scenarios A–I plus R — uniform across all projects.
 #
-# Cache-hit guards (must come FROM-CACHE, bundle unchanged):
-#   A  cold restore        build → rm build/ → build
-#   B  add test class       non-input source added
-#   C  edit resource        messages.properties (not an input)
-#   E  comment-only Java    byte-identical bytecode
-#   R  relocatability       build a copy at a different absolute path
+# Cache-hit guards (bundle unchanged):
+#   A  cold restore         build → rm build/ → build          FROM-CACHE
+#   I  repeat build         two identical builds in a row       UP-TO-DATE
+#   B  add test class       non-input source added             FROM-CACHE
+#   C  edit resource        messages.properties (not an input) FROM-CACHE
+#   E  comment-only Java    byte-identical bytecode            FROM-CACHE
+#   R  relocatability       copy at a different absolute path  FROM-CACHE,
+#                           then UP-TO-DATE on its repeat build
 # Cache-miss guards (must NOT come FROM-CACHE):
 #   D  edit @Route Java     main-classpath bytecode changes (bundle same)
 #   F  add @JsModule         project frontend module (bundle changes)
@@ -599,7 +660,7 @@ fi
 
 STATS_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/config/stats.json"
 INDEX_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/webapp/index.html"
-view=src/main/java/com/example/HelloView.java
+view="${MODULE_DIR}src/main/java/com/example/HelloView.java"
 
 # Start from a clean generated frontend state so a cold run is
 # deterministic regardless of what a previous local run left behind — CI
@@ -610,11 +671,11 @@ view=src/main/java/com/example/HelloView.java
 # already containing scenario F's module makes F's change a no-op). These
 # dirs are all generated and gitignored; scenario A rebuilds them.
 echo "Clearing generated frontend state (bundles/, dev-bundle/, frontend/generated/)"
-rm -rf src/main/bundles src/main/dev-bundle src/main/frontend/generated
+rm -rf "${MODULE_DIR}src/main/bundles" "${MODULE_DIR}src/main/dev-bundle" "${MODULE_DIR}src/main/frontend/generated"
 
 section "${project}: Scenario A (cold-cache restore)"
-run_gradle scenario-a-1.log clean "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-a-1.log ":vaadinBuildFrontend" SUCCESS
+run_gradle scenario-a-1.log clean "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-a-1.log "$VBF_TASK" SUCCESS
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
@@ -622,16 +683,54 @@ assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 # its produced bundle against.
 capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 
-rm -rf build/
-run_gradle scenario-a-2.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-a-2.log ":vaadinBuildFrontend" FROM-CACHE
+rm -rf "${BUILD_DIRS[@]}"
+run_gradle scenario-a-2.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-a-2.log "$VBF_TASK" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 
+scenario_begin "${project}: Scenario I (repeat build with no changes)"
+# Two identical consecutive builds. scenario_begin has wiped every module's
+# build/, so the first build starts from the same state as a fresh
+# checkout — in particular a multi-module project's sibling jar does not
+# exist yet when :vaadinBuildFrontend's inputs are snapshotted. The second
+# build changes nothing, so it must be UP-TO-DATE.
+#
+# That is the invariant vaadin/flow#25387 breaks: the Flow plugin folds the
+# runtime classpath's dependency jars into a scalar @Input via a provider
+# that does not carry the file collection's task dependencies, so the value
+# is computed before the sibling jar exists and flips once it does. The task
+# then re-runs under a second cache key even though nothing changed —
+# reported as SUCCESS, or as FROM-CACHE when that second key is already in
+# the cache. UP-TO-DATE is the only correct outcome.
+#
+# The bug only surfaces under the configuration cache (measured against
+# Vaadin 25.2.6: without --configuration-cache the repeat build is
+# UP-TO-DATE even on the broken plugin), so projects that set
+# CC_SCENARIO=1 run both builds with it and additionally assert Gradle
+# reused its entry. Gradle names the invalidating input in that case
+# ("cannot be reused because file 'lib/build/libs/lib.jar' has changed"),
+# which points straight at the cause.
+cc_args=()
+if [[ "$CC_SCENARIO" -eq 1 ]]; then
+  cc_args=(--configuration-cache)
+fi
+run_gradle scenario-i-1.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${cc_args[@]}"
+run_gradle scenario-i-2.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${cc_args[@]}"
+assert_outcome scenario-i-2.log "$VBF_TASK" UP-TO-DATE
+if [[ "$CC_SCENARIO" -eq 1 ]]; then
+  assert_cc_reused scenario-i-2.log
+fi
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
+scenario_end
+
 scenario_begin "${project}: Scenario B (add test class)"
-added_test=src/test/java/com/example/AddedTest.java
+added_test="${MODULE_DIR}src/test/java/com/example/AddedTest.java"
 mkdir -p "$(dirname "$added_test")"
 # Register undo before creating the file so an aborted run still
 # leaves the working tree clean (EXIT trap → flush_cleanups).
@@ -647,8 +746,8 @@ public class AddedTest {
     }
 }
 EOF
-run_gradle scenario-b.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-b.log ":vaadinBuildFrontend" FROM-CACHE
+run_gradle scenario-b.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-b.log "$VBF_TASK" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -660,14 +759,14 @@ scenario_begin "${project}: Scenario C (edit resource)"
 # input of vaadinBuildFrontend. (application.properties is declared as an
 # @InputFile with content sensitivity, so editing it would correctly
 # invalidate the cache and is not a useful negative case here.)
-resource=src/main/resources/messages.properties
+resource="${MODULE_DIR}src/main/resources/messages.properties"
 cp "$resource" "$resource.bak"
 # Register restore before the destructive edit so an aborted run
 # still leaves the working tree clean (EXIT trap → flush_cleanups).
 register_cleanup "[[ -f '$resource.bak' ]] && mv '$resource.bak' '$resource'"
 echo "# scenario C marker $(date -u +%s)" >> "$resource"
-run_gradle scenario-c.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-c.log ":vaadinBuildFrontend" FROM-CACHE
+run_gradle scenario-c.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-c.log "$VBF_TASK" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -683,8 +782,8 @@ register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 # server-side, so the frontend bundle is byte-identical — hence
 # NOT_FROM_CACHE (bytecode is a cache input) but signature unchanged.
 sed -i 's/Hello, Vaadin!/Hello, Vaadin (edited)!/' "$view"
-run_gradle scenario-d.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-d.log ":vaadinBuildFrontend" NOT_FROM_CACHE
+run_gradle scenario-d.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-d.log "$VBF_TASK" NOT_FROM_CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -699,8 +798,8 @@ register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 # source text or timestamps (rather than normalized compiled output)
 # would wrongly miss here; a correct one still hits.
 printf '\n// scenario E: comment-only edit — must not invalidate the bundle\n' >> "$view"
-run_gradle scenario-e.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-e.log ":vaadinBuildFrontend" FROM-CACHE
+run_gradle scenario-e.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-e.log "$VBF_TASK" FROM-CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
@@ -711,7 +810,7 @@ scenario_begin "${project}: Scenario F (add @JsModule to a view)"
 # A project-local frontend module referenced from a scanned @Route view.
 # This genuinely changes the bundle, so it must miss the cache and the
 # new module must appear in the produced bundle's stats.json.
-marker_js=src/main/frontend/marker-widget.js
+marker_js="${MODULE_DIR}src/main/frontend/marker-widget.js"
 mkdir -p "$(dirname "$marker_js")"
 register_cleanup "rm -f '$marker_js'"
 cat > "$marker_js" <<'EOF'
@@ -722,8 +821,8 @@ cp "$view" "$view.bak"
 register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 sed -i 's#^import com.vaadin.flow.router.Route;#import com.vaadin.flow.component.dependency.JsModule;\nimport com.vaadin.flow.router.Route;#' "$view"
 sed -i 's#^@Route("")#@JsModule("./marker-widget.js")\n@Route("")#' "$view"
-run_gradle scenario-f.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-f.log ":vaadinBuildFrontend" NOT_FROM_CACHE
+run_gradle scenario-f.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-f.log "$VBF_TASK" NOT_FROM_CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_file_contains "$ARCHIVE_GLOB" "$STATS_INNER" "marker-widget"
@@ -739,7 +838,7 @@ scenario_begin "${project}: Scenario G (edit frontend/index.html)"
 # is a user-owned file that may be absent; seed the canonical template
 # when missing. Creating a user app shell where there was none is itself
 # a genuine frontend-input change, so the assertion holds either way.
-idx=src/main/frontend/index.html
+idx="${MODULE_DIR}src/main/frontend/index.html"
 mkdir -p "$(dirname "$idx")"
 if [[ -f "$idx" ]]; then
   cp "$idx" "$idx.bak"
@@ -762,8 +861,8 @@ HTML
 fi
 g_marker="scenario-g-marker-$(date -u +%s)"
 sed -i "s#</head>#  <meta name=\"${g_marker}\" content=\"1\" />\n</head>#" "$idx"
-run_gradle scenario-g.log "$BUILD_TASK" sourcesJar javadocJar
-assert_outcome scenario-g.log ":vaadinBuildFrontend" NOT_FROM_CACHE
+run_gradle scenario-g.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-g.log "$VBF_TASK" NOT_FROM_CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_file_contains "$ARCHIVE_GLOB" "$INDEX_INNER" "$g_marker"
@@ -780,9 +879,9 @@ scenario_begin "${project}: Scenario H (add-on dependency with frontend resource
 # project build.gradle is edited (keeps the scenario uniform).
 build_addon_jar
 addon_jar="${repo_root}/fixtures/demo-addon/build/libs/demo-addon.jar"
-run_gradle scenario-h.log "$BUILD_TASK" sourcesJar javadocJar \
+run_gradle scenario-h.log "$BUILD_TASK" "${AUX_TASKS[@]}" \
   --init-script "${script_dir}/addon-init.gradle" -PdemoAddonJar="$addon_jar"
-assert_outcome scenario-h.log ":vaadinBuildFrontend" NOT_FROM_CACHE
+assert_outcome scenario-h.log "$VBF_TASK" NOT_FROM_CACHE
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_file_contains "$ARCHIVE_GLOB" "$STATS_INNER" "demo-addon-marker"
@@ -813,16 +912,36 @@ register_cleanup "rm -rf '$reloc_dir'"
 # was created") and marks :vaadinBuildFrontend non-cacheable — a false
 # failure that masks the actual path-dependent-cache-key bug R exists to
 # catch. Dropping them lets R isolate that one bug.
-tar -cf - --dereference \
-  --exclude=./node_modules --exclude=./build --exclude=./.gradle \
-  --exclude=./src/main/frontend --exclude=./src/main/bundles \
-  --exclude=./src/main/dev-bundle \
-  -C . . | tar -xf - -C "$reloc_dir"
+# Excludes are derived from the per-project parameters so they land on
+# the right module: node_modules and the generated frontend live in the
+# Vaadin module ($MODULE_DIR), and a multi-module project has one build
+# dir per module ($BUILD_DIRS).
+tar_excludes=(--exclude=./.gradle "--exclude=./${MODULE_DIR}node_modules")
+for bd in "${BUILD_DIRS[@]}"; do
+  tar_excludes+=("--exclude=./${bd}")
+done
+tar_excludes+=(
+  "--exclude=./${MODULE_DIR}src/main/frontend"
+  "--exclude=./${MODULE_DIR}src/main/bundles"
+  "--exclude=./${MODULE_DIR}src/main/dev-bundle"
+)
+tar -cf - --dereference "${tar_excludes[@]}" -C . . | tar -xf - -C "$reloc_dir"
 chmod +x "$reloc_dir/gradlew" 2>/dev/null || true
 (
   cd "$reloc_dir"
   run_gradle "${project_dir}/scenario-r.log" clean "$BUILD_TASK"
-  assert_outcome "${project_dir}/scenario-r.log" ":vaadinBuildFrontend" FROM-CACHE
+  assert_outcome "${project_dir}/scenario-r.log" "$VBF_TASK" FROM-CACHE
+  assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+  assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+
+  # Scenario I's invariant, seen from the cache *consumer* side: the first
+  # build here restored outputs from the shared cache, so an immediate
+  # identical build must be UP-TO-DATE. Note this runs without
+  # --configuration-cache, so it does not reproduce vaadin/flow#25387 (that
+  # needs the configuration cache — see scenario I); it is the cheap
+  # general guard that a relocated consumer settles after one build.
+  run_gradle "${project_dir}/scenario-r2.log" "$BUILD_TASK"
+  assert_outcome "${project_dir}/scenario-r2.log" "$VBF_TASK" UP-TO-DATE
   assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
   assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 )

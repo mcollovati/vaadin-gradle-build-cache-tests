@@ -1,0 +1,25 @@
+// Plain Java library with no Vaadin dependency. Its only job is to be a
+// `project(':lib')` dependency of ':web', so that lib.jar lands on
+// :web:vaadinBuildFrontend's runtime classpath. On a cold build that jar
+// does not exist yet when the task's inputs are snapshotted; see
+// vaadin/flow#25387 and scenario I in scripts/run-project.sh.
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+// No project version is set, so drop the "-unspecified" suffix Gradle
+// would otherwise append: the runner and the scenario docs refer to
+// build/libs/lib.jar.
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}

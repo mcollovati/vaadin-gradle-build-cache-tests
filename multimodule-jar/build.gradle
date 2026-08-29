@@ -1,0 +1,4 @@
+// Root project: deliberately empty of plugins. Everything lives in the
+// two modules — ':lib' (plain java) and ':web' (java + Vaadin) — so the
+// project dependency crossing a module boundary is the thing under test,
+// not a root-level classpath.

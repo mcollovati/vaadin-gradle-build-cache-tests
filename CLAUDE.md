@@ -8,7 +8,9 @@ A regression-guard test suite for the Flow Gradle plugin's
 `vaadinBuildFrontend` task and its build-cache wiring. Each subproject
 is a deliberately minimal Vaadin Flow application that exercises a
 different archive shape (`jar`, `war`, `bootJar`, `shadowJar`,
-user-defined `Jar`, custom `frontendOutputDirectory`). The suite is
+user-defined `Jar`, custom `frontendOutputDirectory`) — or, in
+`multimodule-jar`, a different *build* shape: two modules where the
+Vaadin one depends on the other. The suite is
 **not** a normal codebase — the Java/resources under each subproject
 exist only so the scripted scenarios have something to edit, and the
 real assertions live in `scripts/`.
@@ -16,13 +18,15 @@ real assertions live in `scripts/`.
 ## Architecture in one paragraph
 
 `scripts/run-project.sh` drives one subproject through the same
-fixed scenario set (A–H plus relocatability scenario R in cold mode;
+fixed scenario set (A–I plus relocatability scenario R in cold mode;
 single FROM-CACHE assertion in warm mode);
 `scripts/run-suite.sh` is a thin wrapper that runs
 `run-project.sh` over every subproject (canonical list in its
 `ALL_PROJECTS` array) and prints a PASS/FAIL summary. It looks up
-project-specific values (build task,
-archive path, in-archive bundle prefix) from a `case` statement keyed
+project-specific values (build task, archive path, in-archive bundle
+prefix, and — for multi-module projects — the module path prefix
+`MODULE_DIR`, the asserted task path `VBF_TASK`, the `BUILD_DIRS` to wipe
+and the `AUX_TASKS` to build) from a `case` statement keyed
 on the project dir name — so adding a new subproject means adding a
 matching `case` branch alongside the project's `build.gradle`, plus a
 new entry in the matrix in `.github/workflows/build-cache.yml`.
@@ -87,7 +91,7 @@ FLOW_VERSION=$(cd /path/to/flow && ./mvnw -q help:evaluate -Dexpression=project.
 Then:
 
 ```bash
-# Cold: wipes ~/.gradle/caches/build-cache-1, runs scenarios A–H + R.
+# Cold: wipes ~/.gradle/caches/build-cache-1, runs scenarios A–I + R.
 bash scripts/run-project.sh --cache=cold plain-jar "$FLOW_VERSION"
 
 # Warm (default): leaves cache alone, asserts clean build → FROM-CACHE.
@@ -107,8 +111,39 @@ bash scripts/run-suite.sh --vaadin-platform 25.2.3
 
 Warm mode requires the cache to already be populated (cold run first,
 or restored Actions cache in CI). The runner's per-project parameters
-(build task, archive path, in-archive prefix) live in the `case`
-statement at `scripts/run-project.sh:176`.
+(build task, archive path, in-archive prefix, module prefix, task path)
+live in the `case` statement at `scripts/run-project.sh:316`.
+
+## Multi-module: `multimodule-jar`
+
+The one project with more than one Gradle module: `:lib` (plain `java`)
+and `:web` (`java` + `application` + `com.vaadin.flow`) with
+`implementation project(':lib')`. That single dependency is the point —
+it puts a jar produced by *another task in the same build* on
+`:web:vaadinBuildFrontend`'s runtime classpath, which the Flow plugin
+folds into a `dependencyJarFingerprint` scalar `@Input`. In
+[vaadin/flow#25387](https://github.com/vaadin/flow/issues/25387) that
+scalar comes from a standalone `project.provider { dependencyJarFiles.files … }`
+that does not carry the file collection's task dependencies, so it is
+computed before `lib.jar` exists on a cold build and changes on the next
+one: two cache keys for one unchanged tree, `UP-TO-DATE` only on the
+third build. Scenario I is the guard.
+
+The instability **only appears under Gradle's configuration cache**.
+Measured against Vaadin 25.2.6 on this fixture: with `--configuration-cache`
+the second of two identical builds re-executes and Gradle re-stores the CC
+entry (`cannot be reused because file 'lib/build/libs/lib.jar' has
+changed`); without it, the second build is plain UP-TO-DATE and the bug is
+invisible. That is why `multimodule-jar` sets `CC_SCENARIO=1` — a scenario I
+without CC would pass on the broken plugin.
+
+Because everything the scenarios edit lives under `web/`, the runner
+addresses scenario paths through `$MODULE_DIR` (`""` for the
+single-module projects, `web/` here) and the asserted task through
+`$VBF_TASK`. `BUILD_DIRS` lists every module's `build/` so
+`scenario_begin` wipes `lib/build` too — that is what makes `lib.jar` as
+absent at the start of each scenario as it is in a fresh checkout, which
+is the state that exposes the bug.
 
 ## Scenarios (cold mode)
 
@@ -156,6 +191,25 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
 
 - **A**: build → `rm -rf build/` → build. Expect SUCCESS then FROM-CACHE.
   Captures the baseline bundle signature.
+- **I**: two identical consecutive builds (`scenario-i-1.log`,
+  `scenario-i-2.log`); the second must be **UP-TO-DATE**. The only scenario
+  asserting UP-TO-DATE. A bare SUCCESS means the cache key moved between
+  two builds of an unchanged tree — vaadin/flow#25387; FROM-CACHE means
+  Gradle discarded and restored outputs it should have recognised as
+  current (how the bug reads once the second key is in the cache).
+  - **Requires the configuration cache.** Measured against Vaadin 25.2.6:
+    without `--configuration-cache` the repeat build is UP-TO-DATE even on
+    the broken plugin, so a non-CC assertion here is worthless as a guard.
+    Projects opt in with `CC_SCENARIO=1` in their `case` branch — currently
+    only `multimodule-jar`, so the other six are not exposed to unrelated
+    CC incompatibilities in their plugin stacks (Shadow, Spring Boot). Those
+    six still run the two builds without CC as a cheap sanity check.
+  - When CC is on, the scenario also asserts Gradle **reused** its entry
+    (`assert_cc_reused`). A re-store is the same bug reported by Gradle
+    itself, and it names the culprit: `configuration cache cannot be reused
+    because file 'lib/build/libs/lib.jar' has changed`.
+  - Load-bearing only for `multimodule-jar`: the single-module projects
+    have no project jars in that fingerprint.
 - **B**: Add `src/test/java/com/example/AddedTest.java` → build. FROM-CACHE.
 - **C**: Append to `src/main/resources/messages.properties` → build. FROM-CACHE.
   - Uses `messages.properties` specifically because it is **not**
@@ -167,7 +221,11 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
   build. FROM-CACHE. The trailing comment shifts no code line numbers, so
   javac emits byte-identical bytecode; guards against a key that keys on
   source text/timestamps rather than normalized compiled output.
-- **R**: Relocatability. Runs by default in cold mode (A–H plus R). Copy
+- **R**: Relocatability. Runs by default in cold mode (A–I plus R). Its
+  second build at the relocated path asserts **UP-TO-DATE** — scenario I's
+  invariant from the cache consumer's side, but without
+  `--configuration-cache`, so it does *not* reproduce #25387; it is the
+  cheap guard that a relocated consumer settles after one build. Copy
   the project to a fresh absolute path (via `tar --dereference`, excluding
   `node_modules`/`build`/`.gradle` **and** the generated frontend surface —
   the whole `src/main/frontend` tree, `src/main/bundles`,
@@ -271,7 +329,15 @@ what we think.
    `fixtures/demo-addon` jar via init script) and R (relocatability, a
    generic tree copy) need no per-project setup.
 2. Add a `case` branch in `scripts/run-project.sh` setting
-   `BUILD_TASK`, `ARCHIVE_GLOB`, and `BUNDLE_PREFIX`. `BUNDLE_PREFIX`
+   `BUILD_TASK`, `ARCHIVE_GLOB`, and `BUNDLE_PREFIX`. A multi-module
+   project also overrides `MODULE_DIR` (path prefix of the Vaadin
+   module, trailing slash), `VBF_TASK` (the asserted task path),
+   `BUILD_DIRS` (every module's build dir) and `AUX_TASKS` (qualified
+   sources/javadoc task paths); the defaults above the `case` cover the
+   single-module shape. `CC_SCENARIO=1` opts the project's scenario I into
+   `--configuration-cache` (only worth it where a project dependency makes
+   #25387 reachable, and only if the project's plugins are CC-compatible).
+   See the `multimodule-jar` branch. `BUNDLE_PREFIX`
    is the prefix inside the archive where the Flow plugin stages the
    bundle (`""` for jars, `WEB-INF/classes/` for wars). Spring Boot
    `bootJar` also uses `""`: since Flow PR #25001 (25.3.0-alpha4) the
@@ -285,7 +351,10 @@ what we think.
    place of `com.vaadin.flow`, no `mavenLocal()`, and
    `com.vaadin:flow:${flowVersion}` resolved from Central/prereleases)
    and `settings.gradle`, plus **symlinks** `src -> ../../new-project/src`,
-   `gradle -> ../../new-project/gradle`, `gradlew`, `gradlew.bat`. Then
+   `gradle -> ../../new-project/gradle`, `gradlew`, `gradlew.bat`. A
+   multi-module mirror keeps the wrapper symlinks at the top level but
+   needs one `src` symlink **per module** (see `platform/multimodule-jar`,
+   which has `lib/src` and `web/src`). Then
    add `new-project` to both matrix lists in
    `.github/workflows/build-cache-published.yml`.
 5. Update the project table and the layout tree in `README.md`.

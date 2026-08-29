@@ -1,0 +1,56 @@
+// The Vaadin module. Mirrors ../../plain-jar's configuration exactly,
+// with one addition: `implementation project(':lib')`. That single line
+// is what this project exists for — it puts a jar produced by another
+// module on :web:vaadinBuildFrontend's runtime classpath, which is the
+// precondition for the fingerprint instability in vaadin/flow#25387.
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.vaadin.flow'
+}
+
+def flowVersion = providers.gradleProperty('flowVersion').getOrElse('25.2-SNAPSHOT')
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+}
+
+dependencies {
+    implementation project(':lib')
+
+    implementation "com.vaadin:flow:${flowVersion}"
+    implementation 'org.slf4j:slf4j-simple:2.0.3'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withJavadocJar()
+    withSourcesJar()
+}
+
+application {
+    mainClass = 'com.example.Application'
+}
+
+// No project version is set, so drop the "-unspecified" suffix Gradle
+// would otherwise append to every archive filename.
+tasks.withType(Jar).configureEach {
+    archiveVersion = ''
+}
+
+// Fixture sources carry no Javadoc comments on purpose; silence the
+// doclint "missing comment" warnings so the withJavadocJar() build is clean.
+tasks.withType(Javadoc).configureEach {
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

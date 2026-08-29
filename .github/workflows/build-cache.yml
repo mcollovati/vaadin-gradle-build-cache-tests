@@ -134,6 +134,7 @@ jobs:
           - shaded-jar
           - custom-jar-task
           - custom-frontend-output
+          - multimodule-jar
 
     steps:
       - name: Checkout test-projects
@@ -228,6 +229,7 @@ jobs:
           - shaded-jar
           - custom-jar-task
           - custom-frontend-output
+          - multimodule-jar
 
     steps:
       - name: Checkout test-projects

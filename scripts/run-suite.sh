@@ -62,6 +62,7 @@ ALL_PROJECTS=(
   shaded-jar
   custom-jar-task
   custom-frontend-output
+  multimodule-jar
 )
 
 CACHE_MODE=cold
