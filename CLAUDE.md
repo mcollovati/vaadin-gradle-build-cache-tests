@@ -250,7 +250,7 @@ Cache-hit guards (FROM-CACHE, signature unchanged):
   **first** of the two CC-only scenarios, ahead of CC-FRESH: any red scenario
   aborts the pass under `set -e`, so they are ordered by cost and severity —
   S is one build for a build-breaking defect, CC-FRESH two (one a full
-  frontend regeneration) for a "reconfigure every second build" tax.
+  frontend regeneration) for a wasted reconfiguration.
 - **H ordering**: scenario H runs in its normal position with the
   configuration cache off, but **last** in the CC pass. On a plugin carrying
   the same `classFinderClasspath` defect H fails the *build*, not just an

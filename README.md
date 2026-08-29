@@ -185,7 +185,7 @@ S is the **first** of the two CC-only scenarios, ahead of CC-FRESH. Under
 `set -e` any red scenario aborts the pass and hides the ones behind it, so
 they are ordered by cost and severity: S is a single build guarding a defect
 that breaks the build outright, where CC-FRESH spends two builds (one a full
-frontend regeneration) on a "reconfigure every second build" tax.
+frontend regeneration) on a wasted reconfiguration.
 
 Scenario **H runs last in the CC pass** (in its normal position when the
 configuration cache is off). On a plugin carrying that same serialization
@@ -201,9 +201,33 @@ contrast is the diagnosis.
 `**/src/main/frontend/` entirely, so on a real checkout that directory does
 not exist and the first build creates it. A plugin that probes it while
 configuring the task graph makes the *next* build invalidate with
-`the file system entry '…/src/main/frontend' has been created` — a
-permanent "reconfigure every second build" tax on exactly the path CI and
-every new developer hits.
+`the file system entry '…/src/main/frontend' has been created`, throwing
+away a configuration-cache entry over a directory the build itself
+produced.
+
+It is **currently red** on Flow `25.3-SNAPSHOT` (and reproduces in two
+builds of `plain-jar` alone). Measured cost: one extra configuration on
+the first rebuild after a fresh checkout — builds 3 and 4 reuse normally,
+so it is not a recurring tax. The mechanism, read off the run's own
+configuration-cache report, is three file-system-entry inputs attributed
+to `com.vaadin.flow.internal.FrontendUtils` — `./src/main/frontend`,
+`./frontend` and `./src/main/frontend/index.ts`:
+
+- `PluginEffectiveConfiguration.effectiveFrontendDirectory` calls
+  `FrontendUtils.getFrontendFolder(npmFolder, frontendDirectory)`, which
+  tests `src/main/frontend` for existence and falls back to the legacy
+  `frontend/` folder;
+- `reactEnable` maps over it into `FrontendUtils.isReactRouterRequired`,
+  which tests `src/main/frontend/index.ts`.
+
+Both feed task `@Input`s, so storing an entry forces them to be evaluated
+and their probes become build-logic inputs. Meanwhile
+`BuildFrontendOutputProperties.getFrontendIndexHtml()` declares
+`src/main/frontend/index.html` as an `@OutputFile`, so Gradle materialises
+that parent directory even for a `FROM-CACHE` restore — it is left empty
+here — and the recorded check flips. Note the *value* never changes:
+`getFrontendFolder` returns `src/main/frontend` either way, since the
+legacy folder does not exist. The reconfiguration buys nothing.
 
 Entries live in the **build root's** `.gradle/configuration-cache` (for
 `multimodule-jar` that is `multimodule-jar/.gradle/`, not `web/.gradle/`),

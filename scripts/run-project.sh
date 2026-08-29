@@ -1234,7 +1234,7 @@ chmod +x "$reloc_dir/gradlew" 2>/dev/null || true
 # and hides the ones behind it, so the order here is by cost and severity: S is
 # a single build guarding a defect that breaks the *build* outright for anyone
 # with a local jar on their classpath, where CC-FRESH spends two builds (one a
-# full frontend regeneration) on a "reconfigure every second build" tax. The
+# full frontend regeneration) on a wasted reconfiguration. The
 # cheap, severe one reports first.
 if cc_on; then
   scenario_begin "${project}: Scenario S (file-based dependency: entry must still store)"
