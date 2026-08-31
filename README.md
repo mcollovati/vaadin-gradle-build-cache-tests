@@ -547,8 +547,8 @@ The workflow has four job groups:
    upload step is listed as `MISSING` instead of silently vanishing from the
    table.
 
-Each scenario job also renders its own report into its own step summary,
-so the job page answers "what failed" on its own.
+Scenario jobs only upload their report — they do not render it into their
+own step summary. A single row adds nothing next to the aggregated table.
 
 Failed runs upload `cold-<project>-cc<off|on>-logs` /
 `warm-<project>-logs` artifacts containing the Gradle logs, the run report

@@ -365,8 +365,9 @@ of `build-cache-published.yml`'s platform-plugin path. Three jobs:
    **not** all-cold success, so warm entries whose cold counterpart
    failed fail loudly (cache miss) instead of being silently skipped.
 4. `report` (job name *Summary*), `if: !cancelled()`, `needs` both
-   matrices. Every scenario job renders its own run report into its step
-   summary and uploads it as `report-<cold|warm>-<project>[-cc<leg>]`;
+   matrices. Every scenario job uploads its run report as
+   `report-<cold|warm>-<project>[-cc<leg>]` (upload only — a per-job render
+   of one row adds nothing next to the aggregate);
    this job downloads them all (**without** `merge-multiple` — every file
    is named `run-report.env`, so one directory per artifact is what keeps
    them apart) and renders one table plus `::error` annotations, so the run

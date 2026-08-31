@@ -225,17 +225,9 @@ jobs:
           key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # run-project.sh writes this on every exit path, pass or fail: it names
-      # the scenario that failed and the assertion message. Rendered here so
-      # the job's own page answers "what failed", and uploaded so the Summary
-      # job can put every matrix entry in one table. `|| true` because a
-      # summary must never be what fails (or passes) a job.
-      - name: Job summary
-        if: always()
-        run: |
-          bash scripts/report-summary.sh \
-            --title="cold / ${{ matrix.project }} / cc-${{ matrix.cc }}" \
-            ${{ matrix.project }}/run-report.env >> "$GITHUB_STEP_SUMMARY" || true
-
+      # the scenario that failed and the assertion message. Uploaded, not
+      # rendered here — the Summary job puts every matrix entry in one table,
+      # and a per-job copy of a single row adds nothing to it.
       - name: Upload run report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -345,13 +337,6 @@ jobs:
           JOB_LABEL: warm / ${{ matrix.project }}
           FLOW_VERSION: ${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-version }}
         run: bash scripts/run-project.sh --cache=warm "${{ matrix.project }}" "${FLOW_VERSION}"
-
-      - name: Job summary
-        if: always()
-        run: |
-          bash scripts/report-summary.sh \
-            --title="warm / ${{ matrix.project }}" \
-            ${{ matrix.project }}/run-report.env >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload run report
         if: always()
