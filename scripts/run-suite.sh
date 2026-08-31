@@ -48,6 +48,11 @@
 # Env and Gradle overrides (GRADLE_BIN, GRADLE_USER_HOME, NO_COLOR,
 # FORCE_COLOR) are honoured by the underlying run-project.sh unchanged.
 #
+# A failing row in the summary also names the scenario and the assertion
+# message that failed it, read from that project's run report
+# (<project-dir>/run-report.env, written by run-project.sh — the same file
+# the CI workflows upload and scripts/report-summary.sh renders).
+#
 # Exit status: 0 if every project passed, 1 if any failed, 2 on usage error.
 
 set -euo pipefail
@@ -190,6 +195,7 @@ if [[ "$PLATFORM_MODE" -eq 0 && -n "$FLOW_OVERRIDE" ]]; then
 fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "${script_dir}/.." && pwd)
 runner="${script_dir}/run-project.sh"
 
 if [[ ! -x "$runner" && ! -f "$runner" ]]; then
@@ -226,7 +232,27 @@ echo "${C_DIM}${projects[*]}${C_RESET}"
 
 statuses=()   # parallel to `projects`: PASS or FAIL
 durations=()  # parallel to `projects`: seconds
+reasons=()    # parallel to `projects`: "<scenario> — <detail>" for a FAIL
 failures=0
+
+# Read the scenario and assertion message out of the run report
+# run-project.sh just wrote (<project-dir>/run-report.env, the same file the
+# CI workflows upload). Best-effort: an aborted run may have left none.
+failure_reason() {
+  local report=$1 scenario="" detail="" key value
+  [[ -s "$report" ]] || return 0
+  while IFS='=' read -r key value; do
+    case "$key" in
+      scenario) scenario=$value ;;
+      detail)   detail=$value ;;
+    esac
+  done < "$report"
+  if [[ -n "$scenario" && -n "$detail" ]]; then
+    printf '%s — %s' "$scenario" "$detail"
+  else
+    printf '%s%s' "$scenario" "$detail"
+  fi
+}
 
 for project in "${projects[@]}"; do
   printf '\n%s########################################################%s\n' "${C_BOLD}${C_CYAN}" "$C_RESET"
@@ -254,8 +280,14 @@ for project in "${projects[@]}"; do
   # failure does not trip our own set -e — we want to keep going.
   if bash "$runner" "${runner_args[@]}"; then
     statuses+=("PASS")
+    reasons+=("")
   else
     statuses+=("FAIL")
+    if [[ "$PLATFORM_MODE" -eq 1 ]]; then
+      reasons+=("$(failure_reason "${repo_root}/platform/${project}/run-report.env")")
+    else
+      reasons+=("$(failure_reason "${repo_root}/${project}/run-report.env")")
+    fi
     failures=$((failures + 1))
   fi
   durations+=("$((SECONDS - start))")
@@ -279,8 +311,9 @@ for i in "${!statuses[@]}"; do
   else
     colour="$C_RED"
   fi
-  printf '  %s%-4s%s  %-26s %ss\n' \
-    "${colour}${C_BOLD}" "$st" "$C_RESET" "${projects[$i]}" "${durations[$i]}"
+  printf '  %s%-4s%s  %-26s %5ss  %s\n' \
+    "${colour}${C_BOLD}" "$st" "$C_RESET" "${projects[$i]}" "${durations[$i]}" \
+    "${reasons[$i]}"
 done
 
 # Note any projects that were skipped by --fail-fast.

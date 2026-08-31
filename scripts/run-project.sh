@@ -52,6 +52,14 @@
 #                        -> :vaadinBuildFrontend must come FROM-CACHE.
 #                        Expects the cache to be already populated (e.g.
 #                        from a prior cold run or a restored Actions cache).
+#   --report=<path>      Where to write the run report (default
+#                        <project-dir>/run-report.env). One KV file per
+#                        invocation, written whether the run passes or
+#                        fails, naming the scenario that failed and the
+#                        assertion that failed it. scripts/report-summary.sh
+#                        renders one or more of these; the CI workflows
+#                        upload one per matrix entry so the run summary page
+#                        can name the failed job and scenario.
 #   --help, -h           Show this help and exit.
 #
 # Env:
@@ -59,6 +67,11 @@
 #                        the project, else system 'gradle').
 #   GRADLE_USER_HOME     Standard Gradle override. The wiped cache path
 #                        is "${GRADLE_USER_HOME:-$HOME/.gradle}/caches/build-cache-1".
+#   RUN_REPORT_FILE      Same as --report=<path>.
+#   JOB_LABEL            Name recorded as the report's "job" field. Set by CI
+#                        to the workflow job's own name (e.g.
+#                        "cold / plain-jar / cc-on"); derived from the mode,
+#                        project and configuration-cache pass when unset.
 #
 # All projects exercise the same scenarios in cold mode and the same
 # single warm-cache assertion in warm mode. Each scenario also checks
@@ -142,6 +155,16 @@ fi
 
 section() {
   local rule="────────────────────────────────────────────────────────"
+  # The label of the section in flight is what the run report calls the
+  # failing scenario, so every scenario goes through here: A and R call
+  # section() directly, the rest reach it via scenario_begin, and warm mode
+  # has its own two. The project prefix is dropped — the report names the
+  # project in its own field.
+  CURRENT_SCENARIO=${1#"${project:-}: "}
+  LAST_FAIL=""
+  case "$CURRENT_SCENARIO" in
+    Scenario*|warm-cache*) SCENARIO_COUNT=$((SCENARIO_COUNT + 1)) ;;
+  esac
   printf '\n%s%s%s\n'   "${C_BOLD}${C_CYAN}" "$rule" "$C_RESET"
   printf '%s  %s%s\n'   "${C_BOLD}${C_CYAN}" "$1" "$C_RESET"
   printf '%s%s%s\n\n'   "${C_BOLD}${C_CYAN}" "$rule" "$C_RESET"
@@ -158,10 +181,107 @@ success_banner() {
 # because the cause is known and provably not the Flow plugin's.
 warn() { printf '%sWARN%s %s\n' "$C_YELLOW$C_BOLD" "$C_RESET" "$1"; }
 
+#---------------------------------------------------------------------
+# Run report.
+#
+# One KV file per invocation, written by the EXIT trap whether the run
+# passed or failed, so CI can answer "which job, which scenario, what
+# assertion" from the run summary page without anyone opening a log.
+# scripts/report-summary.sh renders one or more of these; the workflows
+# upload one per matrix entry and aggregate them in a Summary job.
+#
+# Nothing new has to be measured for it: section() already names every
+# scenario, every assertion already prints a one-line FAIL message, and
+# `set -e` means the first failure is the last thing that happened.
+#---------------------------------------------------------------------
+
+# Resolved once the project dir is known, so a usage error — which exits
+# before that — writes nothing.
+REPORT_FILE=""
+REPORT_OVERRIDE=${RUN_REPORT_FILE:-}
+
+CURRENT_SCENARIO=""   # label of the section in flight, project prefix stripped
+SCENARIO_COUNT=0      # scenarios entered so far (the PASS row's detail)
+LAST_FAIL=""          # one-line message of the failing assertion
+LAST_LOG=""           # log of the most recent Gradle invocation
+LAST_ERR_LINE=""      # line and command captured by the ERR trap below
+LAST_ERR_CMD=""
+
+# Red FAIL line that also records itself for the report. The counterpart
+# of warn() above, and of the fail() in assert-cc.sh /
+# assert-task-outcome.sh — those run as separate processes, so their
+# message is recovered by run_assert() instead.
+fail_msg() {
+  LAST_FAIL=$1
+  printf '%sFAIL%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$1" >&2
+}
+
+# Strip ANSI colour and collapse to one line: report values are KV pairs,
+# one per line, and the assert scripts colour their output.
+report_scrub() {
+  printf '%s' "$1" | sed -E $'s/\033\\[[0-9;]*m//g' | tr '\n' ' ' | cut -c1-300
+}
+
+# Run one of the standalone assert-*.sh scripts, echo its output, and on
+# failure keep its FAIL line for the report. The output is captured rather
+# than streamed (these are millisecond log greps), and `|| rc=$?` is
+# load-bearing: a bare call would trip `set -e` before we could record.
+run_assert() {
+  local out rc=0 line=""
+  out=$(bash "$@" 2>&1) || rc=$?
+  if [[ -n "$out" ]]; then
+    if [[ $rc -eq 0 ]]; then
+      printf '%s\n' "$out"
+    else
+      printf '%s\n' "$out" >&2
+    fi
+  fi
+  if [[ $rc -ne 0 ]]; then
+    line=$(grep -m1 FAIL <<<"$out" || true)
+    line=$(report_scrub "$line")
+    LAST_FAIL=${line#FAIL }
+    LAST_FAIL=${LAST_FAIL:-"$(basename "$1") exited ${rc}"}
+  fi
+  return "$rc"
+}
+
+# Write the report. Values are scrubbed to a single line each; the
+# renderer, not the writer, escapes them for Markdown.
+write_report() {
+  local rc=$1
+  [[ -n "$REPORT_FILE" ]] || return 0
+  local status=PASS detail job log=$LAST_LOG
+  log=${log#"${project_dir:-}/"}
+  if [[ $rc -ne 0 ]]; then
+    status=FAIL
+    # Every assertion records a message; the fallback covers a bare
+    # non-zero from something that is not an assertion at all.
+    detail=${LAST_FAIL:-"exited ${rc} at line ${LAST_ERR_LINE:-?}: ${LAST_ERR_CMD:-unknown}"}
+  else
+    detail="${SCENARIO_COUNT} scenarios"
+  fi
+  job=${JOB_LABEL:-"${CACHE_MODE} / ${project:-?} / cc-${CC_PASS}"}
+  {
+    echo "job=$(report_scrub "$job")"
+    echo "project=${project:-}"
+    echo "mode=${CACHE_MODE}"
+    echo "cc=${CC_PASS}"
+    echo "status=${status}"
+    echo "scenario=$(report_scrub "$CURRENT_SCENARIO")"
+    echo "detail=$(report_scrub "$detail")"
+    echo "log=$(report_scrub "$log")"
+    echo "exit_code=${rc}"
+    echo "err_line=${LAST_ERR_LINE}"
+    echo "err_command=$(report_scrub "$LAST_ERR_CMD")"
+    echo "scenarios=${SCENARIO_COUNT}"
+    echo "duration=${SECONDS}"
+  } > "$REPORT_FILE"
+}
+
 # Print the failing line and command before the shell exits via `set -e`.
 # Makes silent exits (e.g. a substitution returning non-zero under
 # pipefail) immediately diagnosable.
-trap 'rc=$?; printf "%srun-project: exit %s at line %s: %s%s\n" "$C_RED" "$rc" "$LINENO" "$BASH_COMMAND" "$C_RESET" >&2' ERR
+trap 'rc=$?; LAST_ERR_LINE=$LINENO; LAST_ERR_CMD=$BASH_COMMAND; printf "%srun-project: exit %s at line %s: %s%s\n" "$C_RED" "$rc" "$LINENO" "$BASH_COMMAND" "$C_RESET" >&2' ERR
 
 # Stack of cleanup actions. Each scenario registers its undo (restore
 # a backed-up file, delete a created file) BEFORE the destructive
@@ -182,7 +302,16 @@ flush_cleanups() {
   pending_cleanups=()
 }
 
-trap flush_cleanups EXIT
+# Every exit path — success, a failed assertion, Ctrl-C — reports first and
+# undoes second: write_report reads the state the failure left behind, and
+# flush_cleanups is what removes it.
+on_exit() {
+  local rc=$?
+  write_report "$rc"
+  flush_cleanups
+}
+
+trap on_exit EXIT
 
 # Cold-mode scenarios are hermetic: scenario_begin records the current
 # cleanup-stack depth (and wipes build/), scenario_end runs every cleanup
@@ -297,6 +426,18 @@ while [[ $# -gt 0 ]]; do
       CACHE_DEBUG=1
       shift
       ;;
+    --report=*)
+      REPORT_OVERRIDE="${1#--report=}"
+      shift
+      ;;
+    --report)
+      if [[ $# -lt 2 ]]; then
+        echo "run-project: --report requires a value" >&2
+        exit 2
+      fi
+      REPORT_OVERRIDE="$2"
+      shift 2
+      ;;
     --flow-version=*)
       FLOW_OVERRIDE="${1#--flow-version=}"
       shift
@@ -370,6 +511,18 @@ fi
 if [[ ! -d "$project_dir" ]]; then
   echo "run-project: unknown project '${project}' (looked in ${project_dir})" >&2
   exit 2
+fi
+
+# The run report lands next to the scenario logs (both gitignored) unless
+# --report / RUN_REPORT_FILE moves it. A relative override is resolved
+# against the invocation directory, not the project dir we cd into below.
+if [[ -n "$REPORT_OVERRIDE" ]]; then
+  case "$REPORT_OVERRIDE" in
+    /*) REPORT_FILE=$REPORT_OVERRIDE ;;
+    *)  REPORT_FILE="$PWD/$REPORT_OVERRIDE" ;;
+  esac
+else
+  REPORT_FILE="${project_dir}/run-report.env"
 fi
 
 # Wipe the shared local build cache. Cold mode calls this once per pass (see
@@ -558,6 +711,9 @@ CC_FLAG_ON=(--configuration-cache --configuration-cache-problems=fail)
 
 run_gradle() {
   local log=$1; shift
+  # The report names the log of the last build, which is the one a failing
+  # assertion is about.
+  LAST_LOG=$log
   # Disable set -e around the pipeline so we can return gradle's exit
   # code (PIPESTATUS[0]) rather than having the pipe trigger an exit
   # before `return` runs. The caller's set -e still applies.
@@ -566,6 +722,7 @@ run_gradle() {
   local rc=${PIPESTATUS[0]}
   set -e
   if [[ $rc -ne 0 ]]; then
+    LAST_FAIL="gradle exited ${rc} (see ${log})"
     echo "run-project: gradle exited ${rc} (see $(pwd)/${log})" >&2
   fi
   return "$rc"
@@ -576,7 +733,7 @@ assert_archive_has_bundle() {
   local prefix=$2
   local marker="${prefix}META-INF/VAADIN/webapp/"
   if [[ ! -f "$archive" ]]; then
-    printf '%sFAIL%s archive not found: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
+    fail_msg "archive not found: ${archive}"
     return 1
   fi
   # `|| true` so that a no-match grep (exit 1) under pipefail does not
@@ -585,7 +742,7 @@ assert_archive_has_bundle() {
   local hits
   hits=$(unzip -l "$archive" | grep -cF "${marker}" || true)
   if [[ "${hits:-0}" -eq 0 ]]; then
-    printf '%sFAIL%s archive %s missing %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" "$marker" >&2
+    fail_msg "archive ${archive} missing ${marker}"
     unzip -l "$archive" | grep -F "META-INF/VAADIN" >&2 || true
     return 1
   fi
@@ -601,14 +758,13 @@ assert_archive_lacks_vaadin_staging() {
   local archive=$1
   local marker="META-INF/VAADIN/"
   if [[ ! -f "$archive" ]]; then
-    printf '%sFAIL%s archive not found: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
+    fail_msg "archive not found: ${archive}"
     return 1
   fi
   local hits
   hits=$(unzip -l "$archive" | grep -cF "$marker" || true)
   if [[ "${hits:-0}" -gt 0 ]]; then
-    printf '%sFAIL%s archive %s must not contain %s (%s entries)\n' \
-      "$C_RED$C_BOLD" "$C_RESET" "$archive" "$marker" "$hits" >&2
+    fail_msg "archive ${archive} must not contain ${marker} (${hits} entries)"
     unzip -l "$archive" | grep -F "$marker" >&2 || true
     return 1
   fi
@@ -617,7 +773,7 @@ assert_archive_lacks_vaadin_staging() {
 }
 
 assert_outcome() {
-  bash "${script_dir}/assert-task-outcome.sh" "$@"
+  run_assert "${script_dir}/assert-task-outcome.sh" "$@"
 }
 
 # Configuration-cache assertions. scripts/assert-cc.sh carries the Gradle 9.3
@@ -637,7 +793,7 @@ assert_outcome() {
 # it instead of the file carrying two copies of every scenario body.
 cc_on() { [[ "$CC_PASS" == "on" ]]; }
 
-assert_cc_stored()      { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" STORED; }
+assert_cc_stored()      { cc_on || return 0; run_assert "${script_dir}/assert-cc.sh" "$1" STORED; }
 # REUSED, unless the entry was invalidated for this project's exempt reason
 # (CC_REUSE_EXEMPT). The exemption is checked first and quietly: assert-cc.sh
 # NOT_REUSED with a reason substring succeeds only when the entry really was
@@ -653,9 +809,9 @@ assert_cc_reused() {
     warn "configuration cache entry not reused, exempt: ${CC_REUSE_EXEMPT} (not the Flow plugin)"
     return 0
   fi
-  bash "${script_dir}/assert-cc.sh" "$log" REUSED
+  run_assert "${script_dir}/assert-cc.sh" "$log" REUSED
 }
-assert_cc_no_problems() { cc_on || return 0; bash "${script_dir}/assert-cc.sh" "$1" NO_PROBLEMS; }
+assert_cc_no_problems() { cc_on || return 0; run_assert "${script_dir}/assert-cc.sh" "$1" NO_PROBLEMS; }
 
 # Unused by the scenarios below: it exists for the inverse investigation —
 # pinning a *known* invalidation while an upstream fix is pending, so that a
@@ -664,9 +820,9 @@ assert_cc_not_reused() {
   local log=$1 reason=${2:-}
   cc_on || return 0
   if [[ -n "$reason" ]]; then
-    bash "${script_dir}/assert-cc.sh" "$log" NOT_REUSED "$reason"
+    run_assert "${script_dir}/assert-cc.sh" "$log" NOT_REUSED "$reason"
   else
-    bash "${script_dir}/assert-cc.sh" "$log" NOT_REUSED
+    run_assert "${script_dir}/assert-cc.sh" "$log" NOT_REUSED
   fi
 }
 
@@ -731,8 +887,7 @@ bundle_signature() {
 capture_baseline_signature() {
   BASELINE_SIG=$(bundle_signature "$1" "$2")
   if [[ -z "$BASELINE_SIG" ]]; then
-    printf '%sFAIL%s could not read %sMETA-INF/VAADIN/config/stats.json from %s to capture baseline signature\n' \
-      "$C_RED$C_BOLD" "$C_RESET" "$2" "$1" >&2
+    fail_msg "could not read ${2}META-INF/VAADIN/config/stats.json from ${1} to capture baseline signature"
     printf '       archive VAADIN staging actually present:\n' >&2
     unzip -l "$1" | grep -F "META-INF/VAADIN" >&2 || printf '       (none)\n' >&2
     return 1
@@ -745,8 +900,7 @@ assert_signature_same() {
   local archive=$1 prefix=$2 sig
   sig=$(bundle_signature "$archive" "$prefix")
   if [[ "$sig" != "$BASELINE_SIG" ]]; then
-    printf '%sFAIL%s bundle signature changed (%s != baseline %s): a cache hit served a different bundle\n' \
-      "$C_RED$C_BOLD" "$C_RESET" "${sig:0:12}" "${BASELINE_SIG:0:12}" >&2
+    fail_msg "bundle signature changed (${sig:0:12} != baseline ${BASELINE_SIG:0:12}): a cache hit served a different bundle"
     return 1
   fi
   printf '%sOK  %s bundle signature matches baseline (%s)\n' \
@@ -757,12 +911,11 @@ assert_signature_differs() {
   local archive=$1 prefix=$2 sig
   sig=$(bundle_signature "$archive" "$prefix")
   if [[ -z "$sig" ]]; then
-    printf '%sFAIL%s could not read stats.json from %s\n' "$C_RED$C_BOLD" "$C_RESET" "$archive" >&2
+    fail_msg "could not read stats.json from ${archive}"
     return 1
   fi
   if [[ "$sig" == "$BASELINE_SIG" ]]; then
-    printf '%sFAIL%s bundle signature unchanged (%s): the frontend change never reached the bundle\n' \
-      "$C_RED$C_BOLD" "$C_RESET" "${sig:0:12}" >&2
+    fail_msg "bundle signature unchanged (${sig:0:12}): the frontend change never reached the bundle"
     return 1
   fi
   printf '%sOK  %s bundle signature differs from baseline (%s vs %s)\n' \
@@ -774,8 +927,7 @@ assert_bundle_file_contains() {
   local archive=$1 inner=$2 marker=$3 hits
   hits=$(unzip -p "$archive" "$inner" 2>/dev/null | grep -cF "$marker" || true)
   if [[ "${hits:-0}" -eq 0 ]]; then
-    printf '%sFAIL%s %s in %s missing expected marker %s\n' \
-      "$C_RED$C_BOLD" "$C_RESET" "$inner" "$archive" "$marker" >&2
+    fail_msg "${inner} in ${archive} missing expected marker ${marker}"
     return 1
   fi
   printf '%sOK  %s %s contains %s (%s)\n' \
@@ -1241,6 +1393,11 @@ tar_excludes+=(
 )
 tar -cf - --dereference "${tar_excludes[@]}" -C . . | tar -xf - -C "$reloc_dir"
 chmod +x "$reloc_dir/gradlew" 2>/dev/null || true
+# R is the one scenario whose builds run in a subshell (to scope the cd into
+# the relocated copy), so run_gradle's LAST_LOG never reaches the shell that
+# writes the run report. Name R's first log here, or a failure inside the
+# subshell would be reported against whatever the previous scenario logged.
+LAST_LOG=scenario-r.log
 (
   cd "$reloc_dir"
   # The copy excludes ./.gradle, so this tree has no configuration-cache entry

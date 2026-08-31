@@ -33,6 +33,10 @@ vite.generated.ts
 **/build.log
 **/warm*.log
 
+# --- Run reports (written by scripts/run-project.sh, rendered by ----
+# scripts/report-summary.sh; CI uploads one per matrix entry)
+**/run-report.env
+
 # --- IDEs ----------------------------------------------------------
 .idea/
 *.iml

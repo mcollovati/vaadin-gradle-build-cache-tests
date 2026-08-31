@@ -46,7 +46,15 @@ for `> Task :foo` lines and matches the suffix (`FROM-CACHE`,
 `scripts/assert-cc.sh`, which parses the same logs for the fate of
 Gradle's CC entry (`STORED`/`REUSED`/`UPDATED`/`NOT_REUSED`/`NO_PROBLEMS`)
 and carries the Gradle 9.3 message reference. Both are standalone so they
-can be run against a log downloaded from a failed CI run. The archive
+can be run against a log downloaded from a failed CI run. On every exit
+path `run-project.sh` also writes a **run report**
+(`<project-dir>/run-report.env`: job label, mode, CC pass, status, the
+scenario in flight, the failing assertion's own message, the log that
+failed) — that is why `section()` tracks the current label and why the
+assert wrappers go through `run_assert`, which keeps the subprocess's FAIL
+line. `scripts/report-summary.sh` renders one or more reports as a Markdown
+table or as `::error` annotations; it is standalone for the same reason the
+assert scripts are. The archive
 content check is a
 `unzip -l | grep META-INF/VAADIN/webapp/` on the produced
 jar/war.
@@ -356,6 +364,18 @@ of `build-cache-published.yml`'s platform-plugin path. Three jobs:
    would defeat the matrix. The job is gated on `build-flow` success,
    **not** all-cold success, so warm entries whose cold counterpart
    failed fail loudly (cache miss) instead of being silently skipped.
+4. `report` (job name *Summary*), `if: !cancelled()`, `needs` both
+   matrices. Every scenario job renders its own run report into its step
+   summary and uploads it as `report-<cold|warm>-<project>[-cc<leg>]`;
+   this job downloads them all (**without** `merge-multiple` — every file
+   is named `run-report.env`, so one directory per artifact is what keeps
+   them apart) and renders one table plus `::error` annotations, so the run
+   page names the failed job and scenario. `--expect-from-suite` lists an
+   entry that never uploaded as `MISSING` rather than letting it vanish.
+   The annotation pass runs last because its exit status is the job's
+   verdict. The `cc` matrix values are quoted (`['off', 'on']`) because
+   unquoted `off`/`on` are YAML 1.1 booleans and the leg name has to
+   survive verbatim into both `--cc` and the job label.
 
 To validate a Flow PR: dispatch with `flow_ref=<pr-branch>`, then
 re-run with `flow_ref=<pre-fix-SHA>` to confirm the suite actually
@@ -396,7 +416,10 @@ what we think.
    under `BOOT-INF/classes/` — see vaadin/flow#25021.
 3. Add `new-project` to both matrix lists in
    `.github/workflows/build-cache.yml` (cold and warm), and to the
-   `ALL_PROJECTS` array in `scripts/run-suite.sh`.
+   `ALL_PROJECTS` array in `scripts/run-suite.sh` — that array is also
+   what `report-summary.sh --expect-from-suite` expands into the list of
+   jobs the CI summary expects a report from, so a project missing from it
+   would drop out of the summary table unnoticed.
 4. Add the published-mode mirror `platform/new-project/`: a real
    `build.gradle` (same non-Vaadin config, but `id 'com.vaadin'` in
    place of `com.vaadin.flow`, no `mavenLocal()`, and

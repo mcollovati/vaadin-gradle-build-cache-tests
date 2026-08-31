@@ -356,7 +356,13 @@ bash scripts/run-project.sh plain-jar "$FLOW_VERSION"
 ### Run the whole suite
 
 `scripts/run-suite.sh` drives `run-project.sh` over every project and
-prints a per-project PASS/FAIL summary (exit non-zero if any failed):
+prints a per-project PASS/FAIL summary (exit non-zero if any failed). A
+failing row names the scenario and the assertion that failed it, read from
+that project's run report — the same `<project>/run-report.env` the CI
+workflows upload:
+
+    FAIL  multimodule-jar   412s  Scenario I (repeat build …) — :web:vaadinBuildFrontend: expected UP-TO-DATE, got SUCCESS
+
 
 ```bash
 # Run the full cold scenario set (A–I + R) for every project. This is the complete
@@ -487,7 +493,7 @@ is triggered manually via `workflow_dispatch`, with inputs:
   is the source-mode (`com.vaadin.flow` plugin) counterpart to the
   platform-mode published workflow below.
 
-The workflow has three job groups:
+The workflow has four job groups:
 
 1. **`build-flow`** — checks out the requested Flow ref and installs
    the Gradle plugin to `~/.m2/repository`, then uploads those
@@ -519,10 +525,36 @@ The workflow has three job groups:
    cache but no CC entry (entries live in the project's `.gradle/` and
    are never persisted across jobs).
 
+4. **`report`** (job name *Summary*) — `if: !cancelled()`, so it runs on a
+   red matrix, which is the case it exists for. Every scenario job writes a
+   run report (`<project>/run-report.env`: job, mode, CC leg, status, the
+   scenario in flight, the failing assertion's own message, the log that
+   failed) and uploads it as `report-<cold|warm>-<project>[-cc<leg>]`. This
+   job downloads them all and renders **one table** into the run summary
+   page — failures first — plus one `::error` annotation per failure, so the
+   run page names the failed job and scenario without anyone opening a log.
+   It is red whenever any entry failed or never reported.
+
+   The renderer is `scripts/report-summary.sh`, and it is standalone like the
+   assert scripts: point it at a directory of downloaded report artifacts to
+   re-render a past run's table locally.
+
+       bash scripts/report-summary.sh reports/*/run-report.env
+
+   `--expect-from-suite` cross-checks the reports against the matrix implied
+   by `ALL_PROJECTS` in `run-suite.sh` (each project: two cold CC legs plus
+   one warm job), so an entry that was cancelled or timed out before its
+   upload step is listed as `MISSING` instead of silently vanishing from the
+   table.
+
+Each scenario job also renders its own report into its own step summary,
+so the job page answers "what failed" on its own.
+
 Failed runs upload `cold-<project>-cc<off|on>-logs` /
-`warm-<project>-logs` artifacts containing the Gradle logs **and** any
-`configuration-cache-report.html` — the report names every CC problem and
-the code that caused it, and is not a `*.log`, so it needs its own path.
+`warm-<project>-logs` artifacts containing the Gradle logs, the run report
+**and** any `configuration-cache-report.html` — the report names every CC
+problem and the code that caused it, and is not a `*.log`, so it needs its
+own path.
 
 ### Published-artifact workflow
 
@@ -538,7 +570,8 @@ the Flow version from the Vaadin version (unless overridden), then the
 `scenarios-cold` and `scenarios-warm` matrices build the `platform/`
 projects, keying the persisted build-cache on the Vaadin and Flow
 versions. Final/beta/rc versions resolve from Maven Central; alpha and
-SNAPSHOT versions from the Vaadin pre-releases repo.
+SNAPSHOT versions from the Vaadin pre-releases repo. It carries the same
+run reports and *Summary* job as the source workflow.
 
 ### Validating a Flow PR
 
@@ -561,6 +594,8 @@ the workflow is not exercising what we think it is.
 │   ├── resolve-flow-version.sh        # Vaadin version -> Flow version
 │   ├── assert-task-outcome.sh
 │   ├── assert-cc.sh
+│   ├── report-summary.sh              # run reports -> CI summary table
+│                                      #   / ::error annotations
 │   ├── addon-init.gradle              # scenario H: inject the add-on jar
 │   └── file-dep-init.gradle           # scenario S: inject a files(...) dep
 ├── fixtures/

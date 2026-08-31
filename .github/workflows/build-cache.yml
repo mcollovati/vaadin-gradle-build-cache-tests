@@ -142,7 +142,10 @@ jobs:
         # between them is the diagnosis (vaadin/flow#25387 is red under cc-on
         # and green under cc-off). Running them as an axis rather than
         # sequentially keeps wall-clock unchanged.
-        cc: [off, on]
+        # Quoted: unquoted off/on are YAML 1.1 booleans, and the leg name has
+        # to survive verbatim — it is both the --cc value and the "cc-off" /
+        # "cc-on" half of the job label the run report is keyed by.
+        cc: ['off', 'on']
 
     steps:
       - name: Checkout test-projects
@@ -189,7 +192,10 @@ jobs:
       # dependency cache. FLOW_VERSION is the published input when given,
       # else the version resolved by build-flow.
       - name: Run cold scenarios
+        # JOB_LABEL is what the run report calls this job, so the aggregated
+        # summary names jobs exactly as the run page does.
         env:
+          JOB_LABEL: cold / ${{ matrix.project }} / cc-${{ matrix.cc }}
           FLOW_VERSION: ${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-version }}
         run: bash scripts/run-project.sh --cache=cold --cc=${{ matrix.cc }} "${{ matrix.project }}" "${FLOW_VERSION}"
 
@@ -212,6 +218,27 @@ jobs:
           path: ~/.gradle/caches/build-cache-1
           key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
+      # run-project.sh writes this on every exit path, pass or fail: it names
+      # the scenario that failed and the assertion message. Rendered here so
+      # the job's own page answers "what failed", and uploaded so the Summary
+      # job can put every matrix entry in one table. `|| true` because a
+      # summary must never be what fails (or passes) a job.
+      - name: Job summary
+        if: always()
+        run: |
+          bash scripts/report-summary.sh \
+            --title="cold / ${{ matrix.project }} / cc-${{ matrix.cc }}" \
+            ${{ matrix.project }}/run-report.env >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-cold-${{ matrix.project }}-cc${{ matrix.cc }}
+          path: ${{ matrix.project }}/run-report.env
+          retention-days: 7
+          if-no-files-found: ignore
+
       # The configuration-cache HTML report is the single most useful CC
       # diagnostic (it names every problem and the code that caused it) and is
       # not a *.log, so it needs its own path. The **/build/ prefix covers
@@ -224,6 +251,7 @@ jobs:
           name: cold-${{ matrix.project }}-cc${{ matrix.cc }}-logs
           path: |
             ${{ matrix.project }}/*.log
+            ${{ matrix.project }}/run-report.env
             ${{ matrix.project }}/**/build/reports/configuration-cache/**
           if-no-files-found: ignore
 
@@ -306,8 +334,25 @@ jobs:
 
       - name: Run warm-cache assertion
         env:
+          JOB_LABEL: warm / ${{ matrix.project }}
           FLOW_VERSION: ${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-version }}
         run: bash scripts/run-project.sh --cache=warm "${{ matrix.project }}" "${FLOW_VERSION}"
+
+      - name: Job summary
+        if: always()
+        run: |
+          bash scripts/report-summary.sh \
+            --title="warm / ${{ matrix.project }}" \
+            ${{ matrix.project }}/run-report.env >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-warm-${{ matrix.project }}
+          path: ${{ matrix.project }}/run-report.env
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload gradle logs on failure
         if: failure()
@@ -316,5 +361,52 @@ jobs:
           name: warm-${{ matrix.project }}-logs
           path: |
             ${{ matrix.project }}/*.log
+            ${{ matrix.project }}/run-report.env
             ${{ matrix.project }}/**/build/reports/configuration-cache/**
           if-no-files-found: ignore
+
+  report:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [build-flow, scenarios-cold, scenarios-warm]
+    # The one job that sees every matrix entry, so it is where "which job,
+    # which scenario" gets answered. Runs even when entries failed — that is
+    # the case it exists for — but not on a cancelled run, where an
+    # all-MISSING table would be noise.
+    if: ${{ !cancelled() }}
+
+    steps:
+      - name: Checkout test-projects
+        uses: actions/checkout@v5
+
+      # One artifact per matrix entry, each holding a file named
+      # run-report.env. Downloaded WITHOUT merge-multiple on purpose: that
+      # would collapse them onto one path, so instead each lands in its own
+      # reports/<artifact-name>/ directory.
+      - name: Download run reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: report-*
+          path: reports
+
+      # Two passes over the same reports: the table into the run summary
+      # page, then the same failures as ::error annotations, which surface at
+      # the top of the run. The annotation pass is last because its exit
+      # status is this job's verdict — a red Summary means at least one
+      # matrix entry failed or never reported.
+      #
+      # --expect-from-suite cross-checks against ALL_PROJECTS in run-suite.sh,
+      # so a job that died before uploading is listed as MISSING instead of
+      # silently vanishing from the table.
+      - name: Render summary
+        run: |
+          if [[ "${{ needs.build-flow.result }}" == "failure" ]]; then
+            echo "> \`Build Flow plugin\` failed, so no scenario ran." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          shopt -s nullglob
+          reports=(reports/*/run-report.env)
+          bash scripts/report-summary.sh --expect-from-suite \
+            "${reports[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          bash scripts/report-summary.sh --expect-from-suite --format=annotations \
+            "${reports[@]}"
