@@ -121,6 +121,12 @@ jobs:
       # it for dependency caching and build-scan integration.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
+        with:
+          # A scenario job runs a dozen-plus Gradle invocations, so the
+          # action's own job summary lists every one of them — noise next to
+          # the run report we render ourselves, and worth reading only when
+          # something went wrong.
+          add-job-summary: 'on-failure'
 
       - name: Make scripts executable
         run: chmod +x scripts/*.sh
@@ -229,6 +235,8 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
+        with:
+          add-job-summary: 'on-failure'
 
       # Restore the exact cache the matching cold job wrote. We hard-fail on a
       # cache miss because the warm assertion is meaningless without the cold
