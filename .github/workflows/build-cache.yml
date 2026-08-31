@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout Flow
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.event.inputs.flow_repo || 'vaadin/flow' }}
           ref: ${{ github.event.inputs.flow_ref || 'main' }}
@@ -50,19 +50,19 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
       - name: Set up Maven
-        uses: stCarolas/setup-maven@v5
+        uses: stCarolas/setup-maven@12eb41b233df95d49b0c11fc1b5bc8312e5d4ce0 # v5.1
         with:
           maven-version: 3.9.9
 
       - name: Cache ~/.m2/repository
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.m2/repository
           key: m2-flow-${{ steps.flow-sha.outputs.sha }}-${{ hashFiles('flow/**/pom.xml') }}
@@ -110,7 +110,7 @@ jobs:
           ls -lh flow-m2.tgz
 
       - name: Upload Flow Maven artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: flow-m2
           path: flow-m2.tgz
@@ -149,24 +149,24 @@ jobs:
 
     steps:
       - name: Checkout test-projects
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       # Each project ships a Gradle wrapper, so we let the wrapper drive
-      # the Gradle version. setup-gradle@v5 still wraps it for dependency
+      # the Gradle version. setup-gradle still wraps it for dependency
       # caching and build-scan integration.
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
         with:
           # A scenario job runs a dozen-plus Gradle invocations, so the
           # action's own job summary lists every one of them — noise next to
@@ -178,7 +178,7 @@ jobs:
       # is resolved directly from Central / vaadin-prereleases by Gradle.
       - name: Download Flow Maven artifacts
         if: ${{ github.event.inputs.flow_version == '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: flow-m2
 
@@ -194,7 +194,7 @@ jobs:
 
       # The script's --cache=cold wipes ~/.gradle/caches/build-cache-1
       # before running, so Scenario A-1 always sees a cold cache even
-      # on workflow reruns where setup-gradle@v5 restored a wrapper /
+      # on workflow reruns where setup-gradle restored a wrapper /
       # dependency cache. FLOW_VERSION is the published input when given,
       # else the version resolved by build-flow.
       - name: Run cold scenarios
@@ -219,7 +219,7 @@ jobs:
       # decides what warm restores — so one designated writer it is.
       - name: Save Gradle local build-cache
         if: ${{ success() && matrix.cc == 'off' }}
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches/build-cache-1
           key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -238,7 +238,7 @@ jobs:
 
       - name: Upload run report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: report-cold-${{ matrix.project }}-cc${{ matrix.cc }}
           path: ${{ matrix.project }}/run-report.env
@@ -252,7 +252,7 @@ jobs:
       # the Vaadin module.
       - name: Upload gradle logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cold-${{ matrix.project }}-cc${{ matrix.cc }}-logs
           path: |
@@ -293,21 +293,21 @@ jobs:
 
     steps:
       - name: Checkout test-projects
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
         with:
           add-job-summary: 'on-failure'
 
@@ -316,7 +316,7 @@ jobs:
       # the cold output — a silent pass on a cold cache would defeat the
       # purpose of this matrix.
       - name: Restore Gradle local build-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches/build-cache-1
           key: gradle-build-cache-${{ matrix.project }}-${{ github.event.inputs.flow_version != '' && github.event.inputs.flow_version || needs.build-flow.outputs.flow-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -326,7 +326,7 @@ jobs:
       # is resolved directly from Central / vaadin-prereleases by Gradle.
       - name: Download Flow Maven artifacts
         if: ${{ github.event.inputs.flow_version == '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: flow-m2
 
@@ -355,7 +355,7 @@ jobs:
 
       - name: Upload run report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: report-warm-${{ matrix.project }}
           path: ${{ matrix.project }}/run-report.env
@@ -364,7 +364,7 @@ jobs:
 
       - name: Upload gradle logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: warm-${{ matrix.project }}-logs
           path: |
@@ -385,14 +385,14 @@ jobs:
 
     steps:
       - name: Checkout test-projects
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One artifact per matrix entry, each holding a file named
       # run-report.env. Downloaded WITHOUT merge-multiple on purpose: that
       # would collapse them onto one path, so instead each lands in its own
       # reports/<artifact-name>/ directory.
       - name: Download run reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: report-*
           path: reports

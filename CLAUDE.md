@@ -447,6 +447,19 @@ what we think.
 - Per-scenario logs (`scenario-*.log`, `warm.log`) are written into
   the subproject dir and are gitignored. CI uploads them as artifacts
   on failure only.
+- Workflow actions are pinned to a **commit SHA**, with the tag in a
+  trailing comment (`uses: actions/checkout@3d3c42e… # v7.0.1`) — a tag is
+  mutable, and a moved tag is a supply-chain problem. To bump one, resolve
+  the new tag and update both the SHA and the comment:
+
+  ```bash
+  gh api repos/actions/checkout/releases/latest --jq .tag_name
+  gh api repos/actions/checkout/commits/<tag> --jq .sha
+  ```
+
+  `gradle/actions` is deliberately held at v5.x: v6 moved the caching
+  functionality into a proprietary `gradle-actions-caching` component whose
+  Terms of Use you accept by upgrading. Bump it only as a deliberate call.
 
 ## Project-specific guidance from `~/.claude/CLAUDE.md`
 
