@@ -552,6 +552,11 @@ MODULE_DIR=""                      # path prefix (trailing /) of the Vaadin modu
 VBF_TASK=":vaadinBuildFrontend"    # task path the scenarios assert on
 BUILD_DIRS=(build)                 # build dirs wiped between scenarios
 AUX_TASKS=(sourcesJar javadocJar)  # sources/javadoc tasks built alongside
+# A plain-java sibling module whose jar lands on the Vaadin module's runtime
+# classpath. Empty for single-module projects, which skips scenario J.
+LIB_PROJECT=""                     # its Gradle path (":lib")
+LIB_DIR=""                         # its path prefix (trailing /)
+LIB_JAR=""                         # the jar it builds
 # Whether this project's plugin stack can build under Gradle's configuration
 # cache at all. 0 skips the CC pass entirely: a CC-hostile plugin produces
 # failures about *itself*, not about the Flow plugin, and Gradle 9 "gracefully
@@ -649,6 +654,9 @@ case "$project" in
     VBF_TASK=":web:vaadinBuildFrontend"
     BUILD_DIRS=(build lib/build web/build)
     AUX_TASKS=(:web:sourcesJar :web:javadocJar)
+    LIB_PROJECT=":lib"
+    LIB_DIR="lib/"
+    LIB_JAR="lib/build/libs/lib.jar"
     BUILD_TASK=":web:build"
     ARCHIVE_GLOB="web/build/libs/web.jar"
     BUNDLE_PREFIX=""
@@ -762,7 +770,8 @@ assert_archive_has_bundle() {
 # counts builds. The .br/.gz copies do not end in .js and are not counted.
 #
 # Holds on every Flow version for the scenarios that start from a wiped build
-# dir; scenario K is the one that rebuilds over an earlier build.
+# dir. Scenario K rebuilds over an earlier build, and so does J-3; J runs after
+# K, which fails first on a Flow without the fix.
 assert_single_chunk_set() {
   local archive=$1 dir=$2 what=$3 entries count
   entries=$(unzip -Z1 "$archive" 2>/dev/null \
@@ -1093,20 +1102,142 @@ fi
 #   F  add @JsModule         project frontend module (bundle changes)
 #   G  edit index.html       frontend template input (bundle changes)
 #   H  add-on dependency     jar-carried frontend module (bundle changes)
+#   J  JS in a sibling jar   same-length @JsExpression edit in :lib, so
+#                            lib.jar keeps its size (bundle changes);
+#                            multi-module projects on Flow 25.4+ only;
+#                            runs last, after K
 #   K  rebuild, no clean     frontend change over an earlier build: one set
 #                            of chunks in the archive and prod.bundle, then
-#                            FROM-CACHE after a wipe; runs last (red on Flow
-#                            without vaadin/flow#26864)
+#                            FROM-CACHE after a wipe; runs just before J
+#                            (red on Flow without vaadin/flow#26864)
 #
 # Every scenario also asserts the produced bundle content: hits keep the
 # baseline stats.json signature; frontend-changing misses (F/G/H) change
 # it (and stage the expected marker), catching a stale-restore false hit.
+# J checks for its marker in the built chunks instead (see the scenario).
 # Every archive check also asserts one set of chunks (one indexhtml-*.js).
 #---------------------------------------------------------------------
 
 STATS_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/config/stats.json"
 INDEX_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/webapp/index.html"
 view="${MODULE_DIR}src/main/java/com/example/HelloView.java"
+
+# Whether the Flow version under test has declared JavaScript
+# (`@JsDefinition` / `@JsExpression`, generated into the bundle), which
+# scenario J needs. Added in Flow 25.4; compares major.minor only, so
+# 25.4-SNAPSHOT and 25.4.0-alpha5 both qualify.
+flow_has_js_definitions() {
+  local major minor
+  [[ "$flow_version" =~ ^([0-9]+)\.([0-9]+) ]] || return 1
+  major=${BASH_REMATCH[1]}
+  minor=${BASH_REMATCH[2]}
+  (( major > 25 || (major == 25 && minor >= 4) ))
+}
+
+# Size of a file in bytes, portable across GNU and BSD.
+file_size() { wc -c < "$1" | tr -d ' '; }
+
+# Scenario J: declared JavaScript in a sibling module's jar.
+#
+# Since Flow 25.4, the JavaScript of a `@JsDefinition` interface lives in the
+# class's bytecode, and vaadinBuildFrontend generates it into the bundle for
+# every such class on the classpath — including classes in dependency jars,
+# with no call site needed. So a change in a dependency jar's bytecode alone
+# can now change the bundle, the way only a jar's frontend resources could
+# before (scenario H).
+#
+# The guarded defect: the plugin folds the dependency jars into a
+# `dependencyJarFingerprint` @Input built from each jar's *name and size*,
+# not its content. A same-length edit of the JavaScript in :lib rebuilds
+# lib.jar with the same size, so the task's key does not move:
+#   * with a shared cache, a fresh checkout restores the old bundle
+#     (FROM-CACHE) — step J-2;
+#   * locally, the task stays UP-TO-DATE on the old bundle — step J-3.
+# Either way the app ships the old JavaScript. Reproduced end to end on
+# Flow 25.4.0-alpha5 (2026-11-05). Scenario D does not catch it: there the
+# bytecode is in the project's own classes, which are content-hashed, and
+# the bundle does not change.
+#
+# Each step uses a marker never built before in this pass, so a cache hit
+# can only be the wrong one. The markers have equal length; the init script
+# stores lib.jar's entries uncompressed, so equal-length constants give an
+# equal-size jar, and each step checks that precondition before trusting
+# the outcome — without it a green step would prove nothing.
+run_scenario_j() {
+if [[ -z "$LIB_PROJECT" ]]; then
+  return 0
+fi
+if ! flow_has_js_definitions; then
+  section "${project}: Scenario J skipped (Flow ${flow_version} has no @JsDefinition; needs 25.4+)"
+  return 0
+fi
+scenario_begin "${project}: Scenario J (same-size edit of declared JavaScript in ${LIB_PROJECT})"
+j_src="${LIB_DIR}src/main/java/com/example/lib/ScenarioJScript.java"
+register_cleanup "rm -f '$j_src'"
+cat > "$j_src" <<'EOF'
+package com.example.lib;
+
+import com.vaadin.flow.js.JsDefinition;
+import com.vaadin.flow.js.JsExpression;
+
+// Scenario J fixture, written and removed by scripts/run-project.sh.
+// The marker is edited in place to another one of the same length.
+@JsDefinition
+public interface ScenarioJScript {
+    @JsExpression("window.scenarioJ = 'scenario-j-marker-1';")
+    void mark();
+}
+EOF
+j_args=(--init-script "${script_dir}/lib-js-definition-init.gradle"
+  "-PscenarioJProject=${LIB_PROJECT}")
+
+# J-1: the first build with the fixture. A new class in lib.jar moves the
+# key by any measure; the marker in the chunks is the precondition that Flow
+# generates JavaScript from a dependency jar at all.
+run_gradle scenario-j-1.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${j_args[@]}"
+assert_outcome scenario-j-1.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_no_problems scenario-j-1.log
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_bundle_chunks_contain "scenario-j-marker-1"
+j_size=$(file_size "$LIB_JAR")
+# Each step's bundle is compared with the previous step's, not with scenario
+# A's baseline (the fixture alone already changes the bundle). Restored at
+# the end, as CC-FRESH does.
+j_saved_baseline=$BASELINE_SIG
+capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+
+# J-2: a fresh checkout with a shared cache. Wipe the build dirs and the
+# packaged bundle, edit the marker, build: the J-1 entry must not be served.
+rm -rf "${BUILD_DIRS[@]}" "${MODULE_DIR}src/main/bundles"
+sed -i 's/scenario-j-marker-1/scenario-j-marker-2/' "$j_src"
+run_gradle scenario-j-2.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${j_args[@]}"
+if [[ "$(file_size "$LIB_JAR")" != "$j_size" ]]; then
+  fail_msg "precondition: ${LIB_JAR} changed size ($(file_size "$LIB_JAR") != ${j_size}), so J-2 does not test a same-size jar"
+  false
+fi
+assert_outcome scenario-j-2.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_no_problems scenario-j-2.log
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_bundle_chunks_contain "scenario-j-marker-2"
+capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+
+# J-3: a local rebuild. Keep build/, edit the marker again, build: the task
+# must execute, not stay UP-TO-DATE on the J-2 output.
+sed -i 's/scenario-j-marker-2/scenario-j-marker-3/' "$j_src"
+run_gradle scenario-j-3.log "$BUILD_TASK" "${AUX_TASKS[@]}" "${j_args[@]}"
+if [[ "$(file_size "$LIB_JAR")" != "$j_size" ]]; then
+  fail_msg "precondition: ${LIB_JAR} changed size ($(file_size "$LIB_JAR") != ${j_size}), so J-3 does not test a same-size jar"
+  false
+fi
+assert_outcome scenario-j-3.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_no_problems scenario-j-3.log
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_bundle_chunks_contain "scenario-j-marker-3"
+BASELINE_SIG=$j_saved_baseline
+scenario_end
+}
 
 # The whole cold scenario set, run once per configuration-cache pass (see the
 # pass loop at the end of this file). $CC_PASS is "off" or "on"; the scenarios
@@ -1361,9 +1492,9 @@ scenario_end
 
 # Scenario K: rebuild after a frontend change, without a clean.
 #
-# Every other scenario starts from a wiped build dir and a deleted
+# Every other scenario but J-3 starts from a wiped build dir and a deleted
 # src/main/bundles, so Vite never runs twice in the same tree and an archive
-# always holds one set of chunks. K is the one that rebuilds over an earlier
+# always holds one set of chunks. K is the one built to rebuild over an earlier
 # build, which is what a developer does all day.
 #
 # The guarded defect (vaadin/flow#26863, fixed by vaadin/flow#26864): Vite does
@@ -1381,9 +1512,9 @@ scenario_end
 #
 # K runs on every Flow version and fails on one without the fix (25.4.0-alpha5
 # and earlier, 25.3.7 and earlier when this was written). It is a function
-# because it runs LAST in both passes, after H, R, S and CC-FRESH: a red
-# scenario aborts the pass under `set -e`, and on those versions it must not
-# hide the scenarios behind it.
+# because it runs late in both passes, after H, R, S and CC-FRESH and just
+# before J: a red scenario aborts the pass under `set -e`, and on those
+# versions it must not hide the scenarios behind it.
 run_scenario_k() {
 scenario_begin "${project}: Scenario K (rebuild after a frontend change, without clean)"
 k_js="${MODULE_DIR}src/main/frontend/scenario-k.js"
@@ -1398,7 +1529,7 @@ register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 sed -i 's#^import com.vaadin.flow.router.Route;#import com.vaadin.flow.component.dependency.JsModule;\nimport com.vaadin.flow.router.Route;#' "$view"
 sed -i 's#^@Route("")#@JsModule("./scenario-k.js")\n@Route("")#' "$view"
 
-# K-1: the build to rebuild over. K runs last, so whether the entry it finds is
+# K-1: the build to rebuild over. K runs late, so whether the entry it finds is
 # reusable depends on the scenario before it: after H, Gradle discards it because
 # H's init script "has been removed". cc_reset makes K-1 a store whatever ran
 # before; K-2 and K-3 must then reuse that entry.
@@ -1682,9 +1813,17 @@ if cc_on; then
   run_scenario_h
 fi
 
-# Both passes: scenario K runs last, because it is red on every Flow version
+# Both passes: scenario K runs late, because it is red on every Flow version
 # without vaadin/flow#26864 (see run_scenario_k).
 run_scenario_k
+
+# Scenario J runs last in both passes: it is red on every Flow plugin that
+# fingerprints dependency jars by name and size (all of them, when it was
+# added), and a red scenario must not hide the ones after it. It goes after
+# K rather than before: J first would hide K on every version, while K first
+# hides J only on a Flow without vaadin/flow#26864, where J-3's one-set-of-
+# chunks check would fail too.
+run_scenario_j
 }
 
 #---------------------------------------------------------------------
