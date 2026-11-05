@@ -163,7 +163,8 @@ broken plugin.
 Because everything the scenarios edit lives under `web/`, the runner
 addresses scenario paths through `$MODULE_DIR` (`""` for the
 single-module projects, `web/` here) and the asserted task through
-`$VBF_TASK`. `BUILD_DIRS` lists every module's `build/` so
+`$VBF_TASK`; scenario J addresses `:lib` through `$LIB_PROJECT`,
+`$LIB_DIR` and `$LIB_JAR`. `BUILD_DIRS` lists every module's `build/` so
 `scenario_begin` wipes `lib/build` too — that is what makes `lib.jar` as
 absent at the start of each scenario as it is in a fresh checkout, which
 is the state that exposes the bug.
@@ -318,6 +319,21 @@ Cache-miss guards (NOT FROM-CACHE):
   this isolates "a dependency's frontend is a cache input" from any
   bytecode change. `run-project.sh` builds the fixture jar first
   (`build_addon_jar`, incremental).
+- **J**: Projects with a sibling module (`LIB_PROJECT`, only
+  `multimodule-jar`) on Flow 25.4+ (`flow_has_js_definitions`). Writes a
+  `@JsDefinition` interface into `:lib`, with
+  `scripts/lib-js-definition-init.gradle` (`-PscenarioJProject=:lib`) adding
+  a `compileOnly` Flow dependency and STORED jar entries. Three builds:
+  J-1 adds the fixture (NOT_FROM_CACHE, marker in the chunks); J-2 wipes
+  the build dirs and makes a same-length edit of the marker (NOT_FROM_CACHE:
+  the J-1 entry must not be restored); J-3 makes another same-length edit
+  without wiping (NOT_FROM_CACHE: not UP-TO-DATE). J-2 and J-3 first check
+  that `lib.jar` kept its size, otherwise the step tests nothing. Each step
+  compares the `stats.json` signature with the previous step's (it hashes
+  `generated/vaadin-js-definitions.js`) and greps the built chunks for its
+  marker. The guarded defect: the plugin's `dependencyJarFingerprint` is
+  `name:size` per jar, and since 25.4 a jar's bytecode alone can change the
+  bundle. Red on Flow 25.4.0-alpha5, so it runs **last** in both passes.
 
 ## CI workflow
 
@@ -400,7 +416,8 @@ what we think.
    project also overrides `MODULE_DIR` (path prefix of the Vaadin
    module, trailing slash), `VBF_TASK` (the asserted task path),
    `BUILD_DIRS` (every module's build dir) and `AUX_TASKS` (qualified
-   sources/javadoc task paths); the defaults above the `case` cover the
+   sources/javadoc task paths), and sets `LIB_PROJECT`/`LIB_DIR`/`LIB_JAR`
+   for a plain-java sibling module to enable scenario J; the defaults above the `case` cover the
    single-module shape. `CC_COMPATIBLE` defaults to `1`; set it to `0` only
    if the project's plugin stack cannot build under `--configuration-cache`,
    with a comment naming the offending plugin (probe first — see README's

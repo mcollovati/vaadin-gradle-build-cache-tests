@@ -1,0 +1,39 @@
+// Init script used only by scenario J (declared JavaScript in a sibling
+// module's jar). It turns the project named by -PscenarioJProject (":lib" in
+// multimodule-jar) into a module that can declare JavaScript with
+// `@JsDefinition`/`@JsExpression`, without editing its build.gradle — so the
+// scenario stays uniform across both build modes and the fixture keeps
+// building on Flow versions that predate the annotations.
+//
+// Two changes, both scoped to that one project:
+//
+// * `compileOnly com.vaadin:flow-server` at -PflowVersion, plus the
+//   repositories the Vaadin module already resolves Flow from (mavenLocal in
+//   source mode, Central / vaadin-prereleases in published mode). The Vaadin
+//   module supplies Flow at runtime, as it does for any add-on.
+//
+// * STORED (uncompressed) jar entries. The Flow plugin fingerprints dependency
+//   jars by name and size; with deflated entries a same-length source edit
+//   only *usually* keeps the jar size, which would make the scenario's
+//   same-size precondition flaky. Stored entries make the jar size a function
+//   of the entry sizes alone, so a same-length edit of a string constant keeps
+//   it exactly.
+allprojects {
+    def target = providers.gradleProperty('scenarioJProject').getOrNull()
+    if (target && path == target) {
+        def flowVersion = providers.gradleProperty('flowVersion').get()
+        repositories {
+            mavenLocal()
+            mavenCentral()
+            maven { url = 'https://maven.vaadin.com/vaadin-prereleases' }
+        }
+        plugins.withId('java') {
+            dependencies {
+                add('compileOnly', "com.vaadin:flow-server:${flowVersion}")
+            }
+            tasks.withType(Jar).configureEach {
+                entryCompression = ZipEntryCompression.STORED
+            }
+        }
+    }
+}

@@ -79,12 +79,29 @@ Cache-**miss** guards (must **not** come `FROM-CACHE`):
 | F | Add a `@JsModule` referencing a project frontend file | new frontend module changes the bundle |
 | G | Edit `src/main/frontend/index.html`                 | the app-shell template is a frontend input |
 | H | Add a dependency jar carrying a `@Route` view with a `@JsModule` (a frontend add-on) | a dependency's frontend is a cache input, staged without any app source change |
+| J | Add a `@JsDefinition` to `:lib`, then make same-length edits to its `@JsExpression`, so `lib.jar` keeps its size: once after wiping `build/` (shared-cache restore), once without (local rebuild) | since Flow 25.4 a dependency jar's bytecode alone can change the bundle, so the jar's content must be in the key, not just its name and size |
 
-Scenarios D–H are the negative/positive-invalidation guards; E, B, C, I
+Scenarios D–H and J are the negative/positive-invalidation guards; E, B, C, I
 and R guard against an over-eager key that rebuilds (or fails to
 relocate) when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via
 `scripts/addon-init.gradle` (no project `build.gradle` edit).
+
+Scenario **J** runs only where there is a sibling module (`multimodule-jar`)
+and only on Flow 25.4 or later, which has declared JavaScript
+(`@JsDefinition` / `@JsExpression`). Flow generates that JavaScript into the
+bundle for every `@JsDefinition` class on the classpath, dependency jars
+included, with no call site needed. The plugin folds dependency jars into
+its key as `name:size`, so a same-length edit of the JavaScript in `:lib`
+leaves the key unchanged and the old bundle is served: `FROM-CACHE` after a
+fresh checkout, `UP-TO-DATE` locally. Reproduced on Flow 25.4.0-alpha5.
+`scripts/lib-js-definition-init.gradle` gives `:lib` a `compileOnly` Flow
+dependency and **uncompressed** jar entries, so equal-length constants give
+an equal-size jar; each step checks that precondition before it trusts the
+outcome. Besides the `stats.json` signature (which records a hash of
+`generated/vaadin-js-definitions.js`), J checks for its marker in the built
+chunks. J runs **last in both passes**, because it is red on every plugin that
+fingerprints jars by size, and a red scenario aborts the pass.
 
 Two further scenarios, **S** and **CC-FRESH**, run only under the
 configuration cache, where what they guard is visible at all — see
@@ -597,7 +614,9 @@ the workflow is not exercising what we think it is.
 │   ├── report-summary.sh              # run reports -> CI summary table
 │                                      #   / ::error annotations
 │   ├── addon-init.gradle              # scenario H: inject the add-on jar
-│   └── file-dep-init.gradle           # scenario S: inject a files(...) dep
+│   ├── file-dep-init.gradle           # scenario S: inject a files(...) dep
+│   └── lib-js-definition-init.gradle  # scenario J: Flow + stored jar
+│                                      #   entries for :lib
 ├── fixtures/
 │   └── demo-addon/                    # scenario H's add-on (a @Route +
 │                                      #   @JsModule); scenario S's marker
