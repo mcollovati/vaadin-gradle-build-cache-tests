@@ -988,31 +988,6 @@ assert_bundle_chunks_lack() {
   printf '%sOK  %s no built chunk contains %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$1"
 }
 
-# Whether the Flow version under test removes the chunks of an earlier build
-# before the production Vite build (vaadin/flow#26864), which scenario K needs.
-#   * 25.4 and later: merged after 25.4.0-alpha5, so all but alpha1-alpha5.
-#   * 25.3: picked to the 25.3 branch after 25.3.7 was released, so the
-#     branch build (25.3-SNAPSHOT) and 25.3.8 and later. 25.3.8 is the first
-#     release that can have it; it was not released when this was written,
-#     so check the release notes if 25.3.8 fails here.
-# Also picked to 24.10, which this suite does not run.
-flow_removes_stale_chunks() {
-  local major minor patch
-  [[ "$flow_version" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))? ]] || return 1
-  major=${BASH_REMATCH[1]}
-  minor=${BASH_REMATCH[2]}
-  patch=${BASH_REMATCH[4]}
-  if [[ "$flow_version" =~ ^25\.4\.0-alpha[1-5]$ ]]; then
-    return 1
-  fi
-  if (( major == 25 && minor == 3 )); then
-    # 25.3-SNAPSHOT has no patch number: it is the branch, which has the fix.
-    [[ -z "$patch" ]] || (( patch >= 8 ))
-    return
-  fi
-  (( major > 25 || (major == 25 && minor >= 4) ))
-}
-
 # Build the demo-addon fixture jar used by scenario H. Idempotent and
 # incremental, so re-running per project is cheap. Uses the same Flow
 # version as the project under test so it resolves in both modes.
@@ -1120,7 +1095,8 @@ fi
 #   H  add-on dependency     jar-carried frontend module (bundle changes)
 #   K  rebuild, no clean     frontend change over an earlier build: one set
 #                            of chunks in the archive and prod.bundle, then
-#                            FROM-CACHE after a wipe (Flow with #26864 only)
+#                            FROM-CACHE after a wipe; runs last (red on Flow
+#                            without vaadin/flow#26864)
 #
 # Every scenario also asserts the produced bundle content: hits keep the
 # baseline stats.json signature; frontend-changing misses (F/G/H) change
@@ -1402,7 +1378,13 @@ scenario_end
 # K-3 then wipes the build dirs (not src/main/bundles) and must restore K-2's
 # output FROM-CACHE with still one set of chunks: deleting the old chunks inside
 # the task must not have changed what the cache stores.
-if flow_removes_stale_chunks; then
+#
+# K runs on every Flow version and fails on one without the fix (25.4.0-alpha5
+# and earlier, 25.3.7 and earlier when this was written). It is a function
+# because it runs LAST in both passes, after H, R, S and CC-FRESH: a red
+# scenario aborts the pass under `set -e`, and on those versions it must not
+# hide the scenarios behind it.
+run_scenario_k() {
 scenario_begin "${project}: Scenario K (rebuild after a frontend change, without clean)"
 k_js="${MODULE_DIR}src/main/frontend/scenario-k.js"
 mkdir -p "$(dirname "$k_js")"
@@ -1416,10 +1398,15 @@ register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
 sed -i 's#^import com.vaadin.flow.router.Route;#import com.vaadin.flow.component.dependency.JsModule;\nimport com.vaadin.flow.router.Route;#' "$view"
 sed -i 's#^@Route("")#@JsModule("./scenario-k.js")\n@Route("")#' "$view"
 
-# K-1: the build to rebuild over.
+# K-1: the build to rebuild over. K runs last, so whether the entry it finds is
+# reusable depends on the scenario before it: after H, Gradle discards it because
+# H's init script "has been removed". cc_reset makes K-1 a store whatever ran
+# before; K-2 and K-3 must then reuse that entry.
+cc_reset
 run_gradle scenario-k-1.log "$BUILD_TASK" "${AUX_TASKS[@]}"
 assert_outcome scenario-k-1.log "$VBF_TASK" NOT_FROM_CACHE
-assert_cc_reused scenario-k-1.log
+assert_cc_stored scenario-k-1.log
+assert_cc_no_problems scenario-k-1.log
 assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
 assert_bundle_chunks_contain "scenario-k-marker-1"
 k_saved_baseline=$BASELINE_SIG
@@ -1450,9 +1437,7 @@ assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 BASELINE_SIG=$k_saved_baseline
 scenario_end
-else
-  section "${project}: Scenario K skipped (Flow ${flow_version} keeps the chunks of earlier builds; needs vaadin/flow#26864)"
-fi
+}
 
 # Scenario H lives in a function because the two passes run it at different
 # points: in its natural place for the CC-off pass, but LAST in the CC pass.
@@ -1696,6 +1681,10 @@ if cc_on; then
   # and CC-FRESH have reported. Everything above has already run at this point.
   run_scenario_h
 fi
+
+# Both passes: scenario K runs last, because it is red on every Flow version
+# without vaadin/flow#26864 (see run_scenario_k).
+run_scenario_k
 }
 
 #---------------------------------------------------------------------
