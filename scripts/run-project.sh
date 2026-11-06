@@ -990,16 +990,25 @@ assert_bundle_chunks_lack() {
 
 # Whether the Flow version under test removes the chunks of an earlier build
 # before the production Vite build (vaadin/flow#26864), which scenario K needs.
-# Merged for 25.4 after 25.4.0-alpha5, and picked to 25.3 and 24.10 with no
-# release yet: so 25.4 and later, except alpha1-alpha5. Widen this to the first
-# 25.3 patch release that has it once it is out.
+#   * 25.4 and later: merged after 25.4.0-alpha5, so all but alpha1-alpha5.
+#   * 25.3: picked to the 25.3 branch after 25.3.7 was released, so the
+#     branch build (25.3-SNAPSHOT) and 25.3.8 and later. 25.3.8 is the first
+#     release that can have it; it was not released when this was written,
+#     so check the release notes if 25.3.8 fails here.
+# Also picked to 24.10, which this suite does not run.
 flow_removes_stale_chunks() {
-  local major minor
-  [[ "$flow_version" =~ ^([0-9]+)\.([0-9]+) ]] || return 1
+  local major minor patch
+  [[ "$flow_version" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))? ]] || return 1
   major=${BASH_REMATCH[1]}
   minor=${BASH_REMATCH[2]}
+  patch=${BASH_REMATCH[4]}
   if [[ "$flow_version" =~ ^25\.4\.0-alpha[1-5]$ ]]; then
     return 1
+  fi
+  if (( major == 25 && minor == 3 )); then
+    # 25.3-SNAPSHOT has no patch number: it is the branch, which has the fix.
+    [[ -z "$patch" ]] || (( patch >= 8 ))
+    return
   fi
   (( major > 25 || (major == 25 && minor >= 4) ))
 }

@@ -88,11 +88,13 @@ carry a content hash, so a rebuild used to leave the chunks of each earlier
 build in the archive and in `prod.bundle`, where they also survived a clean
 build ([vaadin/flow#26863](https://github.com/vaadin/flow/issues/26863)).
 [vaadin/flow#26864](https://github.com/vaadin/flow/pull/26864) fixed that for
-25.4 (and picked it to 25.3 and 24.10, unreleased so far); Flow's own test
-covers one plain project and stops at the output folder, K checks the archive
-of every project here. K runs on Flow 25.4 and later except 25.4.0-alpha1 to
-alpha5, and is skipped on older versions. Measured on 25.4.0-alpha5 with the
-version check forced on, K fails with two sets of chunks in the archive.
+25.4 and was picked to 25.3; Flow's own test covers one plain project and stops
+at the output folder, K checks the archive of every project here. K runs on
+Flow 25.4 and later except 25.4.0-alpha1 to alpha5, and on 25.3 from 25.3.8 and
+on the 25.3 branch build (`25.3-SNAPSHOT`). It is skipped on older versions.
+25.3.8 is the first 25.3 release that can have the fix; it was not out when K
+was added. Measured on 25.4.0-alpha5 with the version check forced on, K fails
+with two sets of chunks in the archive.
 
 Every archive check in every scenario also asserts **one set of chunks**:
 exactly one `indexhtml-*.js` under `META-INF/VAADIN/webapp/VAADIN/build/`. That

@@ -319,7 +319,8 @@ Cache-miss guards (NOT FROM-CACHE):
   bytecode change. `run-project.sh` builds the fixture jar first
   (`build_addon_jar`, incremental).
 - **K**: Flow with vaadin/flow#26864 only (`flow_removes_stale_chunks`: 25.4+
-  except alpha1–alpha5). Adds `src/main/frontend/scenario-k.js` and a
+  except alpha1–alpha5; 25.3.8+ and `25.3-SNAPSHOT`, where 25.3.8 is the first
+  25.3 release that can have it). Adds `src/main/frontend/scenario-k.js` and a
   `@JsModule` for it, builds (K-1, NOT_FROM_CACHE), edits the marker and
   builds again **without** wiping `build/` or `src/main/bundles` (K-2,
   NOT_FROM_CACHE, signature differs, new marker in the chunks, old one gone,
