@@ -79,8 +79,33 @@ Cache-**miss** guards (must **not** come `FROM-CACHE`):
 | F | Add a `@JsModule` referencing a project frontend file | new frontend module changes the bundle |
 | G | Edit `src/main/frontend/index.html`                 | the app-shell template is a frontend input |
 | H | Add a dependency jar carrying a `@Route` view with a `@JsModule` (a frontend add-on) | a dependency's frontend is a cache input, staged without any app source change |
+| K | Build with a project frontend module, change it, build again **without a clean**; then wipe `build/` and build | the change must reach the bundle with only one set of chunks in the archive and in `prod.bundle`; the wipe-and-build must restore it `FROM-CACHE` |
 
-Scenarios D–H are the negative/positive-invalidation guards; E, B, C, I
+Scenario **K** is the only one that runs Vite twice in the same tree: every
+other scenario starts from a wiped build dir and a deleted `src/main/bundles`.
+Vite does not empty its output folder in a production build and chunk names
+carry a content hash, so a rebuild used to leave the chunks of each earlier
+build in the archive and in `prod.bundle`, where they also survived a clean
+build ([vaadin/flow#26863](https://github.com/vaadin/flow/issues/26863)).
+[vaadin/flow#26864](https://github.com/vaadin/flow/pull/26864) fixed that for
+25.4 and was picked to 25.3; Flow's own test covers one plain project and stops
+at the output folder, K checks the archive of every project here.
+
+K runs on every Flow version, so it **fails** on a version without the fix:
+25.4.0-alpha5 and earlier, and 25.3.7 and earlier (25.3.8 is the first 25.3
+release that can have the fix; the `25.3` branch build has it). That is on
+purpose: old chunks in an archive are a defect, whatever version ships them.
+K runs **last** in both passes, so that on those versions it fails after every
+other scenario has reported. Measured on 25.4.0-alpha5, K fails with two sets
+of chunks in the archive.
+
+Every archive check in every scenario also asserts **one set of chunks**:
+exactly one `indexhtml-*.js` under `META-INF/VAADIN/webapp/VAADIN/build/`. That
+holds on every Flow version for the scenarios that start clean, so it needs no
+version check, and it would catch a cache restore that mixes old and new
+outputs.
+
+Scenarios D–H and K are the negative/positive-invalidation guards; E, B, C, I
 and R guard against an over-eager key that rebuilds (or fails to
 relocate) when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via

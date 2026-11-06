@@ -18,7 +18,7 @@ real assertions live in `scripts/`.
 ## Architecture in one paragraph
 
 `scripts/run-project.sh` drives one subproject through the same
-fixed scenario set (A–I plus relocatability scenario R in cold mode;
+fixed scenario set (A–I and K, plus relocatability scenario R in cold mode;
 single FROM-CACHE assertion in warm mode). Cold mode runs that set once
 per **configuration-cache pass** (`--cc=off|on|both`, default both): the
 configuration cache is an execution mode that changes *when* task inputs
@@ -318,6 +318,21 @@ Cache-miss guards (NOT FROM-CACHE):
   this isolates "a dependency's frontend is a cache input" from any
   bytecode change. `run-project.sh` builds the fixture jar first
   (`build_addon_jar`, incremental).
+- **K**: runs on every Flow version and is red on one without
+  vaadin/flow#26864 (25.4.0-alpha5 and earlier, 25.3.7 and earlier), so it
+  runs **last** in both passes (`run_scenario_k`, called after H, R, S and
+  CC-FRESH). Adds `src/main/frontend/scenario-k.js` and a
+  `@JsModule` for it, builds (K-1, NOT_FROM_CACHE), edits the marker and
+  builds again **without** wiping `build/` or `src/main/bundles` (K-2,
+  NOT_FROM_CACHE, signature differs, new marker in the chunks, old one gone,
+  one set of chunks in `prod.bundle`), then wipes the build dirs only (K-3,
+  FROM-CACHE, signature same as K-2). The only scenario that runs Vite twice
+  in one tree; it guards vaadin/flow#26863 (old chunks piling up in the
+  archive and `prod.bundle`).
+- **One set of chunks**: `assert_archive_has_bundle` also calls
+  `assert_single_chunk_set` — exactly one `indexhtml-*.js` under
+  `META-INF/VAADIN/webapp/VAADIN/build/` — so every scenario checks it. It
+  needs no version check, because every scenario but K starts clean.
 
 ## CI workflow
 

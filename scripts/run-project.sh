@@ -747,6 +747,33 @@ assert_archive_has_bundle() {
     return 1
   fi
   printf '%sOK  %s archive %s contains %s (%s entries)\n' "$C_GREEN$C_BOLD" "$C_RESET" "$archive" "$marker" "$hits"
+  assert_single_chunk_set "$archive" "${prefix}META-INF/VAADIN/webapp/VAADIN/build/" "archive ${archive}"
+}
+
+# Assert that a bundle holds the chunks of exactly one build: one
+# indexhtml-<hash>.js entry under <dir> in the zip <archive> (an application
+# archive, or src/main/bundles/prod.bundle).
+#
+# Vite does not empty its output folder in a production build, and every chunk
+# name carries a content hash, so a rebuild without a clean used to leave the
+# chunks of each earlier build next to the new ones: in the output folder, the
+# archive and prod.bundle (vaadin/flow#26863, fixed by vaadin/flow#26864). The
+# entry point is the one chunk every build has exactly once, so counting it
+# counts builds. The .br/.gz copies do not end in .js and are not counted.
+#
+# Holds on every Flow version for the scenarios that start from a wiped build
+# dir; scenario K is the one that rebuilds over an earlier build.
+assert_single_chunk_set() {
+  local archive=$1 dir=$2 what=$3 entries count
+  entries=$(unzip -Z1 "$archive" 2>/dev/null \
+    | grep -E "^${dir}indexhtml-[^/]*\.js$" || true)
+  count=$(printf '%s' "$entries" | grep -c . || true)
+  if [[ "${count:-0}" -ne 1 ]]; then
+    fail_msg "${what} holds ${count} sets of chunks (expected 1): ${entries//$'\n'/ }"
+    return 1
+  fi
+  printf '%sOK  %s %s holds one set of chunks (%s)\n' \
+    "$C_GREEN$C_BOLD" "$C_RESET" "$what" "${entries##*/}"
 }
 
 # Negative counterpart of assert_archive_has_bundle: sources and javadoc
@@ -934,6 +961,33 @@ assert_bundle_file_contains() {
     "$C_GREEN$C_BOLD" "$C_RESET" "$inner" "$marker" "$hits"
 }
 
+# Count the built JavaScript chunks in the archive that contain <marker>. The
+# chunk names carry a content hash, so they are matched by glob.
+bundle_chunks_with() {
+  unzip -p "$ARCHIVE_GLOB" "${BUNDLE_PREFIX}META-INF/VAADIN/webapp/VAADIN/build/*.js" \
+    2>/dev/null | grep -acF "$1" || true
+}
+
+assert_bundle_chunks_contain() {
+  local hits
+  hits=$(bundle_chunks_with "$1")
+  if [[ "${hits:-0}" -eq 0 ]]; then
+    fail_msg "no built chunk in ${ARCHIVE_GLOB} contains ${1}"
+    return 1
+  fi
+  printf '%sOK  %s built chunks contain %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$1"
+}
+
+assert_bundle_chunks_lack() {
+  local hits
+  hits=$(bundle_chunks_with "$1")
+  if [[ "${hits:-0}" -ne 0 ]]; then
+    fail_msg "a built chunk in ${ARCHIVE_GLOB} still contains ${1}, from an earlier build"
+    return 1
+  fi
+  printf '%sOK  %s no built chunk contains %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$1"
+}
+
 # Build the demo-addon fixture jar used by scenario H. Idempotent and
 # incremental, so re-running per project is cheap. Uses the same Flow
 # version as the project under test so it resolves in both modes.
@@ -1039,10 +1093,15 @@ fi
 #   F  add @JsModule         project frontend module (bundle changes)
 #   G  edit index.html       frontend template input (bundle changes)
 #   H  add-on dependency     jar-carried frontend module (bundle changes)
+#   K  rebuild, no clean     frontend change over an earlier build: one set
+#                            of chunks in the archive and prod.bundle, then
+#                            FROM-CACHE after a wipe; runs last (red on Flow
+#                            without vaadin/flow#26864)
 #
 # Every scenario also asserts the produced bundle content: hits keep the
 # baseline stats.json signature; frontend-changing misses (F/G/H) change
 # it (and stage the expected marker), catching a stale-restore false hit.
+# Every archive check also asserts one set of chunks (one indexhtml-*.js).
 #---------------------------------------------------------------------
 
 STATS_INNER="${BUNDLE_PREFIX}META-INF/VAADIN/config/stats.json"
@@ -1300,6 +1359,86 @@ assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
 assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
 scenario_end
 
+# Scenario K: rebuild after a frontend change, without a clean.
+#
+# Every other scenario starts from a wiped build dir and a deleted
+# src/main/bundles, so Vite never runs twice in the same tree and an archive
+# always holds one set of chunks. K is the one that rebuilds over an earlier
+# build, which is what a developer does all day.
+#
+# The guarded defect (vaadin/flow#26863, fixed by vaadin/flow#26864): Vite does
+# not empty its output folder in a production build, and chunk names carry a
+# content hash, so each rebuild added a set of chunks next to the old ones.
+# They reached the archive and src/main/bundles/prod.bundle, which `clean` does
+# not touch, so they also survived a clean build. Flow's own functional test
+# covers one plain project and stops at the output folder; K checks the archive
+# of every packaging shape here, both configuration-cache passes, and the
+# published platform plugin.
+#
+# K-3 then wipes the build dirs (not src/main/bundles) and must restore K-2's
+# output FROM-CACHE with still one set of chunks: deleting the old chunks inside
+# the task must not have changed what the cache stores.
+#
+# K runs on every Flow version and fails on one without the fix (25.4.0-alpha5
+# and earlier, 25.3.7 and earlier when this was written). It is a function
+# because it runs LAST in both passes, after H, R, S and CC-FRESH: a red
+# scenario aborts the pass under `set -e`, and on those versions it must not
+# hide the scenarios behind it.
+run_scenario_k() {
+scenario_begin "${project}: Scenario K (rebuild after a frontend change, without clean)"
+k_js="${MODULE_DIR}src/main/frontend/scenario-k.js"
+mkdir -p "$(dirname "$k_js")"
+register_cleanup "rm -f '$k_js'"
+cat > "$k_js" <<'EOF'
+// scenario K: edited between two builds that do not clean in between
+window.scenarioK = 'scenario-k-marker-1';
+EOF
+cp "$view" "$view.bak"
+register_cleanup "[[ -f '$view.bak' ]] && mv '$view.bak' '$view'"
+sed -i 's#^import com.vaadin.flow.router.Route;#import com.vaadin.flow.component.dependency.JsModule;\nimport com.vaadin.flow.router.Route;#' "$view"
+sed -i 's#^@Route("")#@JsModule("./scenario-k.js")\n@Route("")#' "$view"
+
+# K-1: the build to rebuild over. K runs last, so whether the entry it finds is
+# reusable depends on the scenario before it: after H, Gradle discards it because
+# H's init script "has been removed". cc_reset makes K-1 a store whatever ran
+# before; K-2 and K-3 must then reuse that entry.
+cc_reset
+run_gradle scenario-k-1.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-k-1.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_stored scenario-k-1.log
+assert_cc_no_problems scenario-k-1.log
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_bundle_chunks_contain "scenario-k-marker-1"
+k_saved_baseline=$BASELINE_SIG
+capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+
+# K-2: change the module and rebuild, keeping build/ and src/main/bundles.
+sed -i 's/scenario-k-marker-1/scenario-k-marker-2/' "$k_js"
+run_gradle scenario-k-2.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-k-2.log "$VBF_TASK" NOT_FROM_CACHE
+assert_cc_reused scenario-k-2.log
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_signature_differs "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_bundle_chunks_contain "scenario-k-marker-2"
+assert_bundle_chunks_lack "scenario-k-marker-1"
+assert_single_chunk_set "${MODULE_DIR}src/main/bundles/prod.bundle" \
+  "webapp/VAADIN/build/" "src/main/bundles/prod.bundle"
+capture_baseline_signature "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+
+# K-3: wipe the build dirs only, and restore K-2's output from the cache.
+rm -rf "${BUILD_DIRS[@]}"
+run_gradle scenario-k-3.log "$BUILD_TASK" "${AUX_TASKS[@]}"
+assert_outcome scenario-k-3.log "$VBF_TASK" FROM-CACHE
+assert_cc_reused scenario-k-3.log
+assert_archive_has_bundle "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_signature_same "$ARCHIVE_GLOB" "$BUNDLE_PREFIX"
+assert_bundle_chunks_lack "scenario-k-marker-1"
+assert_archive_lacks_vaadin_staging "$SOURCES_JAR"
+assert_archive_lacks_vaadin_staging "$JAVADOC_JAR"
+BASELINE_SIG=$k_saved_baseline
+scenario_end
+}
+
 # Scenario H lives in a function because the two passes run it at different
 # points: in its natural place for the CC-off pass, but LAST in the CC pass.
 #
@@ -1542,6 +1681,10 @@ if cc_on; then
   # and CC-FRESH have reported. Everything above has already run at this point.
   run_scenario_h
 fi
+
+# Both passes: scenario K runs last, because it is red on every Flow version
+# without vaadin/flow#26864 (see run_scenario_k).
+run_scenario_k
 }
 
 #---------------------------------------------------------------------
