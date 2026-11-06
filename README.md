@@ -79,8 +79,28 @@ Cache-**miss** guards (must **not** come `FROM-CACHE`):
 | F | Add a `@JsModule` referencing a project frontend file | new frontend module changes the bundle |
 | G | Edit `src/main/frontend/index.html`                 | the app-shell template is a frontend input |
 | H | Add a dependency jar carrying a `@Route` view with a `@JsModule` (a frontend add-on) | a dependency's frontend is a cache input, staged without any app source change |
+| K | Build with a project frontend module, change it, build again **without a clean**; then wipe `build/` and build | the change must reach the bundle with only one set of chunks in the archive and in `prod.bundle`; the wipe-and-build must restore it `FROM-CACHE` |
 
-Scenarios D–H are the negative/positive-invalidation guards; E, B, C, I
+Scenario **K** is the only one that runs Vite twice in the same tree: every
+other scenario starts from a wiped build dir and a deleted `src/main/bundles`.
+Vite does not empty its output folder in a production build and chunk names
+carry a content hash, so a rebuild used to leave the chunks of each earlier
+build in the archive and in `prod.bundle`, where they also survived a clean
+build ([vaadin/flow#26863](https://github.com/vaadin/flow/issues/26863)).
+[vaadin/flow#26864](https://github.com/vaadin/flow/pull/26864) fixed that for
+25.4 (and picked it to 25.3 and 24.10, unreleased so far); Flow's own test
+covers one plain project and stops at the output folder, K checks the archive
+of every project here. K runs on Flow 25.4 and later except 25.4.0-alpha1 to
+alpha5, and is skipped on older versions. Measured on 25.4.0-alpha5 with the
+version check forced on, K fails with two sets of chunks in the archive.
+
+Every archive check in every scenario also asserts **one set of chunks**:
+exactly one `indexhtml-*.js` under `META-INF/VAADIN/webapp/VAADIN/build/`. That
+holds on every Flow version for the scenarios that start clean, so it needs no
+version check, and it would catch a cache restore that mixes old and new
+outputs.
+
+Scenarios D–H and K are the negative/positive-invalidation guards; E, B, C, I
 and R guard against an over-eager key that rebuilds (or fails to
 relocate) when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via
