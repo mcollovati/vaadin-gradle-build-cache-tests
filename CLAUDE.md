@@ -163,7 +163,8 @@ broken plugin.
 Because everything the scenarios edit lives under `web/`, the runner
 addresses scenario paths through `$MODULE_DIR` (`""` for the
 single-module projects, `web/` here) and the asserted task through
-`$VBF_TASK`. `BUILD_DIRS` lists every module's `build/` so
+`$VBF_TASK`; scenario J addresses `:lib` through `$LIB_PROJECT`,
+`$LIB_DIR` and `$LIB_JAR`. `BUILD_DIRS` lists every module's `build/` so
 `scenario_begin` wipes `lib/build` too — that is what makes `lib.jar` as
 absent at the start of each scenario as it is in a fresh checkout, which
 is the state that exposes the bug.
@@ -320,19 +321,37 @@ Cache-miss guards (NOT FROM-CACHE):
   (`build_addon_jar`, incremental).
 - **K**: runs on every Flow version and is red on one without
   vaadin/flow#26864 (25.4.0-alpha5 and earlier, 25.3.7 and earlier), so it
-  runs **last** in both passes (`run_scenario_k`, called after H, R, S and
-  CC-FRESH). Adds `src/main/frontend/scenario-k.js` and a
+  runs late in both passes (`run_scenario_k`, called after H, R, S and
+  CC-FRESH, just before J). Adds `src/main/frontend/scenario-k.js` and a
   `@JsModule` for it, builds (K-1, NOT_FROM_CACHE), edits the marker and
   builds again **without** wiping `build/` or `src/main/bundles` (K-2,
   NOT_FROM_CACHE, signature differs, new marker in the chunks, old one gone,
   one set of chunks in `prod.bundle`), then wipes the build dirs only (K-3,
-  FROM-CACHE, signature same as K-2). The only scenario that runs Vite twice
+  FROM-CACHE, signature same as K-2). The scenario built to run Vite twice
   in one tree; it guards vaadin/flow#26863 (old chunks piling up in the
   archive and `prod.bundle`).
 - **One set of chunks**: `assert_archive_has_bundle` also calls
   `assert_single_chunk_set` — exactly one `indexhtml-*.js` under
   `META-INF/VAADIN/webapp/VAADIN/build/` — so every scenario checks it. It
-  needs no version check, because every scenario but K starts clean.
+  needs no version check: every scenario but K and J-3 starts clean, and on
+  a version without the fix K fails before J runs.
+- **J**: Projects with a sibling module (`LIB_PROJECT`, only
+  `multimodule-jar`) on Flow 25.4+ (`flow_has_js_definitions`). Writes a
+  `@JsDefinition` interface into `:lib`, with
+  `scripts/lib-js-definition-init.gradle` (`-PscenarioJProject=:lib`) adding
+  a `compileOnly` Flow dependency and STORED jar entries. Three builds:
+  J-1 adds the fixture (NOT_FROM_CACHE, marker in the chunks); J-2 wipes
+  the build dirs and makes a same-length edit of the marker (NOT_FROM_CACHE:
+  the J-1 entry must not be restored); J-3 makes another same-length edit
+  without wiping (NOT_FROM_CACHE: not UP-TO-DATE). J-2 and J-3 first check
+  that `lib.jar` kept its size, otherwise the step tests nothing. Each step
+  compares the `stats.json` signature with the previous step's (it hashes
+  `generated/vaadin-js-definitions.js`) and greps the built chunks for its
+  marker. The guarded defect: the plugin's `dependencyJarFingerprint` is
+  `name:size` per jar, and since 25.4 a jar's bytecode alone can change the
+  bundle. Red on every plugin so far, so it runs **last** in both passes,
+  after K: the other way round it would hide K on every version, while K
+  hides J only where both are red.
 
 ## CI workflow
 
@@ -415,7 +434,8 @@ what we think.
    project also overrides `MODULE_DIR` (path prefix of the Vaadin
    module, trailing slash), `VBF_TASK` (the asserted task path),
    `BUILD_DIRS` (every module's build dir) and `AUX_TASKS` (qualified
-   sources/javadoc task paths); the defaults above the `case` cover the
+   sources/javadoc task paths), and sets `LIB_PROJECT`/`LIB_DIR`/`LIB_JAR`
+   for a plain-java sibling module to enable scenario J; the defaults above the `case` cover the
    single-module shape. `CC_COMPATIBLE` defaults to `1`; set it to `0` only
    if the project's plugin stack cannot build under `--configuration-cache`,
    with a comment naming the offending plugin (probe first — see README's

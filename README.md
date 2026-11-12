@@ -79,10 +79,12 @@ Cache-**miss** guards (must **not** come `FROM-CACHE`):
 | F | Add a `@JsModule` referencing a project frontend file | new frontend module changes the bundle |
 | G | Edit `src/main/frontend/index.html`                 | the app-shell template is a frontend input |
 | H | Add a dependency jar carrying a `@Route` view with a `@JsModule` (a frontend add-on) | a dependency's frontend is a cache input, staged without any app source change |
+| J | Add a `@JsDefinition` to `:lib`, then make same-length edits to its `@JsExpression`, so `lib.jar` keeps its size: once after wiping `build/` (shared-cache restore), once without (local rebuild) | since Flow 25.4 a dependency jar's bytecode alone can change the bundle, so the jar's content must be in the key, not just its name and size |
 | K | Build with a project frontend module, change it, build again **without a clean**; then wipe `build/` and build | the change must reach the bundle with only one set of chunks in the archive and in `prod.bundle`; the wipe-and-build must restore it `FROM-CACHE` |
 
-Scenario **K** is the only one that runs Vite twice in the same tree: every
-other scenario starts from a wiped build dir and a deleted `src/main/bundles`.
+Scenario **K** is the one built to run Vite twice in the same tree: every
+other scenario starts from a wiped build dir and a deleted `src/main/bundles`,
+except J's last step, which rebuilds over J-2.
 Vite does not empty its output folder in a production build and chunk names
 carry a content hash, so a rebuild used to leave the chunks of each earlier
 build in the archive and in `prod.bundle`, where they also survived a clean
@@ -95,21 +97,40 @@ K runs on every Flow version, so it **fails** on a version without the fix:
 25.4.0-alpha5 and earlier, and 25.3.7 and earlier (25.3.8 is the first 25.3
 release that can have the fix; the `25.3` branch build has it). That is on
 purpose: old chunks in an archive are a defect, whatever version ships them.
-K runs **last** in both passes, so that on those versions it fails after every
-other scenario has reported. Measured on 25.4.0-alpha5, K fails with two sets
-of chunks in the archive.
+K runs late in both passes, after every other scenario but J, so that on those
+versions it fails after they have reported (J is red there as well). Measured
+on 25.4.0-alpha5, K fails with two sets of chunks in the archive.
 
 Every archive check in every scenario also asserts **one set of chunks**:
 exactly one `indexhtml-*.js` under `META-INF/VAADIN/webapp/VAADIN/build/`. That
 holds on every Flow version for the scenarios that start clean, so it needs no
-version check, and it would catch a cache restore that mixes old and new
-outputs.
+version check (J-3 also rebuilds without a clean, but J runs after K, which
+fails first on a version without the fix), and it would catch a cache restore
+that mixes old and new outputs.
 
-Scenarios D–H and K are the negative/positive-invalidation guards; E, B, C, I
+Scenarios D–H, J and K are the negative/positive-invalidation guards; E, B, C, I
 and R guard against an over-eager key that rebuilds (or fails to
 relocate) when nothing bundle-relevant changed. The add-on jar for H is the
 buildable fixture in `fixtures/demo-addon/`, injected via
 `scripts/addon-init.gradle` (no project `build.gradle` edit).
+
+Scenario **J** runs only where there is a sibling module (`multimodule-jar`)
+and only on Flow 25.4 or later, which has declared JavaScript
+(`@JsDefinition` / `@JsExpression`). Flow generates that JavaScript into the
+bundle for every `@JsDefinition` class on the classpath, dependency jars
+included, with no call site needed. The plugin folds dependency jars into
+its key as `name:size`, so a same-length edit of the JavaScript in `:lib`
+leaves the key unchanged and the old bundle is served: `FROM-CACHE` after a
+fresh checkout, `UP-TO-DATE` locally. Reproduced on Flow 25.4.0-alpha5.
+`scripts/lib-js-definition-init.gradle` gives `:lib` a `compileOnly` Flow
+dependency and **uncompressed** jar entries, so equal-length constants give
+an equal-size jar; each step checks that precondition before it trusts the
+outcome. Besides the `stats.json` signature (which records a hash of
+`generated/vaadin-js-definitions.js`), J checks for its marker in the built
+chunks. J runs **last in both passes**, after K, because it is red on every
+plugin that fingerprints jars by size, and a red scenario aborts the pass.
+Before K it would hide K on every version; after it, K hides J only on a Flow
+without the chunk fix, where J is red anyway.
 
 Two further scenarios, **S** and **CC-FRESH**, run only under the
 configuration cache, where what they guard is visible at all — see
@@ -622,7 +643,9 @@ the workflow is not exercising what we think it is.
 │   ├── report-summary.sh              # run reports -> CI summary table
 │                                      #   / ::error annotations
 │   ├── addon-init.gradle              # scenario H: inject the add-on jar
-│   └── file-dep-init.gradle           # scenario S: inject a files(...) dep
+│   ├── file-dep-init.gradle           # scenario S: inject a files(...) dep
+│   └── lib-js-definition-init.gradle  # scenario J: Flow + stored jar
+│                                      #   entries for :lib
 ├── fixtures/
 │   └── demo-addon/                    # scenario H's add-on (a @Route +
 │                                      #   @JsModule); scenario S's marker
