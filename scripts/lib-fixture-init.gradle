@@ -1,9 +1,11 @@
-// Init script used only by scenario J (declared JavaScript in a sibling
-// module's jar). It turns the project named by -PscenarioJProject (":lib" in
-// multimodule-jar) into a module that can declare JavaScript with
-// `@JsDefinition`/`@JsExpression`, without editing its build.gradle — so the
-// scenario stays uniform across both build modes and the fixture keeps
-// building on Flow versions that predate the annotations.
+// Init script used by scenarios J (declared JavaScript in a sibling module's
+// jar) and L (a frontend file in it). It turns the project named by
+// -PlibFixtureProject (":lib" in multimodule-jar) into a module that can
+// declare JavaScript with `@JsDefinition`/`@JsExpression` and whose jar keeps
+// its size on a same-length edit, without editing its build.gradle — so the
+// scenarios stay uniform across both build modes and the fixture keeps
+// building on Flow versions that predate the annotations. (L needs only the
+// second change below; the first is harmless to it.)
 //
 // Two changes, both scoped to that one project:
 //
@@ -19,7 +21,7 @@
 //   of the entry sizes alone, so a same-length edit of a string constant keeps
 //   it exactly.
 allprojects {
-    def target = providers.gradleProperty('scenarioJProject').getOrNull()
+    def target = providers.gradleProperty('libFixtureProject').getOrNull()
     if (target && path == target) {
         def flowVersion = providers.gradleProperty('flowVersion').get()
         repositories {
