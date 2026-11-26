@@ -666,9 +666,14 @@ case "$project" in
     ;;
 esac
 
+# --stacktrace: a failure that Gradle sums up in one line (e.g. "Plugin ...
+# was not found", which hides the dependency download that actually failed)
+# would otherwise leave nothing to go on in a CI log. It prints only on
+# failure, so passing builds and the log parsers are unaffected.
 GRADLE_ARGS=(
   "--build-cache"
   "--console=plain"
+  "--stacktrace"
   "--no-daemon"
   "-Pvaadin.productionMode"
   "-PflowVersion=${flow_version}"
@@ -995,7 +1000,7 @@ build_addon_jar() {
   local addon_dir="${repo_root}/fixtures/demo-addon"
   echo "Building add-on fixture jar (${addon_dir})"
   "$GRADLE_BIN" -p "$addon_dir" jar \
-    --console=plain --no-daemon "-PflowVersion=${flow_version}" \
+    --console=plain --stacktrace --no-daemon "-PflowVersion=${flow_version}" \
     > "${project_dir}/scenario-h-addon.log" 2>&1 || {
       echo "run-project: failed to build add-on fixture (see ${project_dir}/scenario-h-addon.log)" >&2
       return 1
