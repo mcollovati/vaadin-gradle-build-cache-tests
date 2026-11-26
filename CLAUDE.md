@@ -163,7 +163,7 @@ broken plugin.
 Because everything the scenarios edit lives under `web/`, the runner
 addresses scenario paths through `$MODULE_DIR` (`""` for the
 single-module projects, `web/` here) and the asserted task through
-`$VBF_TASK`; scenario J addresses `:lib` through `$LIB_PROJECT`,
+`$VBF_TASK`; scenarios J and L address `:lib` through `$LIB_PROJECT`,
 `$LIB_DIR` and `$LIB_JAR`. `BUILD_DIRS` lists every module's `build/` so
 `scenario_begin` wipes `lib/build` too — that is what makes `lib.jar` as
 absent at the start of each scenario as it is in a fresh checkout, which
@@ -333,12 +333,12 @@ Cache-miss guards (NOT FROM-CACHE):
 - **One set of chunks**: `assert_archive_has_bundle` also calls
   `assert_single_chunk_set` — exactly one `indexhtml-*.js` under
   `META-INF/VAADIN/webapp/VAADIN/build/` — so every scenario checks it. It
-  needs no version check: every scenario but K and J-3 starts clean, and on
-  a version without the fix K fails before J runs.
+  needs no version check: every scenario but K, J-3 and L-3 starts clean, and on
+  a version without the fix K fails before J and L run.
 - **J**: Projects with a sibling module (`LIB_PROJECT`, only
   `multimodule-jar`) on Flow 25.4+ (`flow_has_js_definitions`). Writes a
   `@JsDefinition` interface into `:lib`, with
-  `scripts/lib-js-definition-init.gradle` (`-PscenarioJProject=:lib`) adding
+  `scripts/lib-fixture-init.gradle` (`-PlibFixtureProject=:lib`) adding
   a `compileOnly` Flow dependency and STORED jar entries. Three builds:
   J-1 adds the fixture (NOT_FROM_CACHE, marker in the chunks); J-2 wipes
   the build dirs and makes a same-length edit of the marker (NOT_FROM_CACHE:
@@ -349,9 +349,40 @@ Cache-miss guards (NOT FROM-CACHE):
   `generated/vaadin-js-definitions.js`) and greps the built chunks for its
   marker. The guarded defect: the plugin's `dependencyJarFingerprint` is
   `name:size` per jar, and since 25.4 a jar's bytecode alone can change the
-  bundle. Red on every plugin so far, so it runs **last** in both passes,
-  after K: the other way round it would hide K on every version, while K
-  hides J only where both are red.
+  bundle. Red on every plugin so far, so it runs after K in both passes:
+  the other way round it would hide K on every version, while K hides J
+  only where both are red.
+  - **`JsInvokers`**: the interface extends it when the flow-server jar has
+    it (`flow_has_class`). Since vaadin/flow#27152 a definition extending
+    neither `JsInvokers` nor `JsSnippets` is left out of the bundle with only
+    a warning, so J-1 would fail on its marker; 25.4.0-alpha5 predates the
+    split and takes a bare interface.
+  - **Call site**: with `JsInvokers` available, J-1 also adds
+    `getElement().executeJs(ScenarioJScript.class).mark()` to `HelloView`.
+    Since vaadin/flow#27077 (25.4.0-beta2) an optimized production build
+    bundles only definitions reachable from a route, so an uncalled fixture
+    would never reach the chunks. Added once, so J-2/J-3 change only `:lib`.
+  - **`@JsStringFallback`**: when the flow-server jar has it
+    (`flow_has_class`, a probe of the resolved jar, not a version check:
+    it reached 25.4 as a cherry-pick, vaadin/flow#27365), the interface
+    carries it and every step asserts the archive's
+    `META-INF/VAADIN/config/js-string-fallbacks.json` names it. That file is
+    not in `stats.json`, so the signature cannot see it. `flow_has_class`
+    returns 2 (a failure, not a skip) when it cannot find the jar.
+- **L**: the same defect and the same three steps as J, for a **frontend
+  file** in `:lib`: `scenario-l.js` under
+  `lib/src/main/resources/META-INF/frontend`, loaded by an `@JsModule` added
+  to `HelloView` in L-1 only, so L-2/L-3 change nothing but the file. Same
+  init script (only its STORED half matters here), same `lib.jar` size
+  precondition (`assert_lib_jar_size_kept`, shared with J). Each step checks
+  its marker is in the chunks and the previous one is gone; no signature
+  assertion after L-1 (whether `stats.json` hashes a jar's frontend file is
+  Flow's business). Multi-module only: Flow reads `META-INF/frontend` only
+  from jars, so in a single-module app's own resources the build fails
+  ("Failed to find … in included JARs", measured on 25.4-SNAPSHOT). No
+  version gate. Runs **last**, after J: on 25.4+ J reports the defect first
+  (and J-1's fallback check still runs), on an older Flow J is skipped and L
+  reports it.
 
 ## CI workflow
 
@@ -435,7 +466,7 @@ what we think.
    module, trailing slash), `VBF_TASK` (the asserted task path),
    `BUILD_DIRS` (every module's build dir) and `AUX_TASKS` (qualified
    sources/javadoc task paths), and sets `LIB_PROJECT`/`LIB_DIR`/`LIB_JAR`
-   for a plain-java sibling module to enable scenario J; the defaults above the `case` cover the
+   for a plain-java sibling module to enable scenarios J and L; the defaults above the `case` cover the
    single-module shape. `CC_COMPATIBLE` defaults to `1`; set it to `0` only
    if the project's plugin stack cannot build under `--configuration-cache`,
    with a comment naming the offending plugin (probe first — see README's
