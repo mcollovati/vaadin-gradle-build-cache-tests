@@ -163,7 +163,8 @@ broken plugin.
 Because everything the scenarios edit lives under `web/`, the runner
 addresses scenario paths through `$MODULE_DIR` (`""` for the
 single-module projects, `web/` here) and the asserted task through
-`$VBF_TASK`. `BUILD_DIRS` lists every module's `build/` so
+`$VBF_TASK`; scenarios J and L address `:lib` through `$LIB_PROJECT`,
+`$LIB_DIR` and `$LIB_JAR`. `BUILD_DIRS` lists every module's `build/` so
 `scenario_begin` wipes `lib/build` too — that is what makes `lib.jar` as
 absent at the start of each scenario as it is in a fresh checkout, which
 is the state that exposes the bug.
@@ -320,19 +321,68 @@ Cache-miss guards (NOT FROM-CACHE):
   (`build_addon_jar`, incremental).
 - **K**: runs on every Flow version and is red on one without
   vaadin/flow#26864 (25.4.0-alpha5 and earlier, 25.3.7 and earlier), so it
-  runs **last** in both passes (`run_scenario_k`, called after H, R, S and
-  CC-FRESH). Adds `src/main/frontend/scenario-k.js` and a
+  runs late in both passes (`run_scenario_k`, called after H, R, S and
+  CC-FRESH, just before J). Adds `src/main/frontend/scenario-k.js` and a
   `@JsModule` for it, builds (K-1, NOT_FROM_CACHE), edits the marker and
   builds again **without** wiping `build/` or `src/main/bundles` (K-2,
   NOT_FROM_CACHE, signature differs, new marker in the chunks, old one gone,
   one set of chunks in `prod.bundle`), then wipes the build dirs only (K-3,
-  FROM-CACHE, signature same as K-2). The only scenario that runs Vite twice
+  FROM-CACHE, signature same as K-2). The scenario built to run Vite twice
   in one tree; it guards vaadin/flow#26863 (old chunks piling up in the
   archive and `prod.bundle`).
 - **One set of chunks**: `assert_archive_has_bundle` also calls
   `assert_single_chunk_set` — exactly one `indexhtml-*.js` under
   `META-INF/VAADIN/webapp/VAADIN/build/` — so every scenario checks it. It
-  needs no version check, because every scenario but K starts clean.
+  needs no version check: every scenario but K, J-3 and L-3 starts clean, and on
+  a version without the fix K fails before J and L run.
+- **J**: Projects with a sibling module (`LIB_PROJECT`, only
+  `multimodule-jar`) on Flow 25.4+ (`flow_has_js_definitions`). Writes a
+  `@JsDefinition` interface into `:lib`, with
+  `scripts/lib-fixture-init.gradle` (`-PlibFixtureProject=:lib`) adding
+  a `compileOnly` Flow dependency and STORED jar entries. Three builds:
+  J-1 adds the fixture (NOT_FROM_CACHE, marker in the chunks); J-2 wipes
+  the build dirs and makes a same-length edit of the marker (NOT_FROM_CACHE:
+  the J-1 entry must not be restored); J-3 makes another same-length edit
+  without wiping (NOT_FROM_CACHE: not UP-TO-DATE). J-2 and J-3 first check
+  that `lib.jar` kept its size, otherwise the step tests nothing. Each step
+  compares the `stats.json` signature with the previous step's (it hashes
+  `generated/vaadin-js-definitions.js`) and greps the built chunks for its
+  marker. The guarded defect: the plugin's `dependencyJarFingerprint` is
+  `name:size` per jar, and since 25.4 a jar's bytecode alone can change the
+  bundle. Red on every plugin so far, so it runs after K in both passes:
+  the other way round it would hide K on every version, while K hides J
+  only where both are red.
+  - **`JsInvokers`**: the interface extends it when the flow-server jar has
+    it (`flow_has_class`). Since vaadin/flow#27152 a definition extending
+    neither `JsInvokers` nor `JsSnippets` is left out of the bundle with only
+    a warning, so J-1 would fail on its marker; 25.4.0-alpha5 predates the
+    split and takes a bare interface.
+  - **Call site**: with `JsInvokers` available, J-1 also adds
+    `getElement().executeJs(ScenarioJScript.class).mark()` to `HelloView`.
+    Since vaadin/flow#27077 (25.4.0-beta2) an optimized production build
+    bundles only definitions reachable from a route, so an uncalled fixture
+    would never reach the chunks. Added once, so J-2/J-3 change only `:lib`.
+  - **`@JsStringFallback`**: when the flow-server jar has it
+    (`flow_has_class`, a probe of the resolved jar, not a version check:
+    it reached 25.4 as a cherry-pick, vaadin/flow#27365), the interface
+    carries it and every step asserts the archive's
+    `META-INF/VAADIN/config/js-string-fallbacks.json` names it. That file is
+    not in `stats.json`, so the signature cannot see it. `flow_has_class`
+    returns 2 (a failure, not a skip) when it cannot find the jar.
+- **L**: the same defect and the same three steps as J, for a **frontend
+  file** in `:lib`: `scenario-l.js` under
+  `lib/src/main/resources/META-INF/frontend`, loaded by an `@JsModule` added
+  to `HelloView` in L-1 only, so L-2/L-3 change nothing but the file. Same
+  init script (only its STORED half matters here), same `lib.jar` size
+  precondition (`assert_lib_jar_size_kept`, shared with J). Each step checks
+  its marker is in the chunks and the previous one is gone; no signature
+  assertion after L-1 (whether `stats.json` hashes a jar's frontend file is
+  Flow's business). Multi-module only: Flow reads `META-INF/frontend` only
+  from jars, so in a single-module app's own resources the build fails
+  ("Failed to find … in included JARs", measured on 25.4-SNAPSHOT). No
+  version gate. Runs **last**, after J: on 25.4+ J reports the defect first
+  (and J-1's fallback check still runs), on an older Flow J is skipped and L
+  reports it.
 
 ## CI workflow
 
@@ -415,7 +465,8 @@ what we think.
    project also overrides `MODULE_DIR` (path prefix of the Vaadin
    module, trailing slash), `VBF_TASK` (the asserted task path),
    `BUILD_DIRS` (every module's build dir) and `AUX_TASKS` (qualified
-   sources/javadoc task paths); the defaults above the `case` cover the
+   sources/javadoc task paths), and sets `LIB_PROJECT`/`LIB_DIR`/`LIB_JAR`
+   for a plain-java sibling module to enable scenarios J and L; the defaults above the `case` cover the
    single-module shape. `CC_COMPATIBLE` defaults to `1`; set it to `0` only
    if the project's plugin stack cannot build under `--configuration-cache`,
    with a comment naming the offending plugin (probe first — see README's
